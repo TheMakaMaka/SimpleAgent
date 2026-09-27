@@ -1,0 +1,50 @@
+[
+  {
+    "level": 1,
+    "name": "单文件 / 单函数",
+    "goal": "在 workspace 下创建 add.py，实现 add(a, b) 返回两数之和",
+    "verify": "import add\nassert add.add(2, 3) == 5\nassert add.add(-1, 1) == 0\nprint('L1 PASS')"
+  },
+  {
+    "level": 2,
+    "name": "单文件 / 控制流 + 边界",
+    "goal": "在 workspace 下创建 fizzbuzz.py，实现 fizzbuzz(n) 返回字符串：能被15整除返回'FizzBuzz'，能被3整除返回'Fizz'，能被5整除返回'Buzz'，否则返回数字的字符串形式",
+    "verify": "import fizzbuzz\nassert fizzbuzz.fizzbuzz(15) == 'FizzBuzz', fizzbuzz.fizzbuzz(15)\nassert fizzbuzz.fizzbuzz(9) == 'Fizz'\nassert fizzbuzz.fizzbuzz(10) == 'Buzz'\nassert fizzbuzz.fizzbuzz(7) == '7', fizzbuzz.fizzbuzz(7)\nprint('L2 PASS')"
+  },
+  {
+    "level": 3,
+    "name": "单文件 / 递归 + 输入校验",
+    "goal": "在 workspace 下创建 fact.py，实现 factorial(n) 用递归计算阶乘；当 n 为负数时抛出 ValueError",
+    "verify": "import fact\nassert fact.factorial(5) == 120, fact.factorial(5)\nassert fact.factorial(0) == 1\nassert fact.factorial(1) == 1\ntry:\n    fact.factorial(-3)\n    raise AssertionError('负数未抛 ValueError')\nexcept ValueError:\n    pass\nprint('L3 PASS')"
+  },
+  {
+    "level": 4,
+    "name": "单文件 / 类 + 异常语义",
+    "goal": "在 workspace 下创建 stack.py，实现 Stack 类：push(x)、pop()（空栈时抛 IndexError）、peek()（空栈时抛 IndexError）、size()、is_empty()",
+    "verify": "import stack\ns = stack.Stack()\nassert s.is_empty() is True\nassert s.size() == 0\ns.push(1); s.push(2)\nassert s.size() == 2\nassert s.peek() == 2\nassert s.pop() == 2\nassert s.pop() == 1\nassert s.is_empty() is True\nfor m in ('pop', 'peek'):\n    try:\n        getattr(s, m)()\n        raise AssertionError(f'{m} 空栈未抛 IndexError')\n    except IndexError:\n        pass\nprint('L4 PASS')"
+  },
+  {
+    "level": 5,
+    "name": "多文件 / 跨模块导入 + 算法",
+    "goal": "在 workspace 下创建 sortlib.py，实现 bubble_sort(lst) 返回升序新列表（不修改原列表）；再创建 mod_a.py，定义 A = 10；再创建 mod_b.py，从 mod_a 导入 A 并定义 B = A * 2",
+    "verify": "import sortlib, mod_b\norig = [3, 1, 2]\nout = sortlib.bubble_sort(orig)\nassert out == [1, 2, 3], out\nassert orig == [3, 1, 2], '原列表被修改了'\nassert sortlib.bubble_sort([]) == []\nassert mod_b.B == 20, mod_b.B\nprint('L5 PASS')"
+  },
+  {
+    "level": 6,
+    "name": "单文件 / 文本解析 + 聚合",
+    "goal": "在 workspace 下创建 wordcount.py，实现 top_words(text, n)：统计 text 中单词（按空白切分、转小写、去掉首尾标点 . , ! ?）出现次数，返回出现次数最多的前 n 个，格式为 [(word, count), ...]；次数相同时按单词字典序升序；n 大于不同单词数时返回全部",
+    "verify": "import wordcount\nr = wordcount.top_words('the cat, the dog! The bird.', 2)\nassert r == [('the', 3), ('bird', 1)], r\nr2 = wordcount.top_words('b a b a', 5)\nassert len(r2) == 2, r2\nassert r2[0] == ('a', 2) and r2[1] == ('b', 2), r2\nprint('L6 PASS')"
+  },
+  {
+    "level": 7,
+    "name": "单文件 / 文件 IO + JSON 往返",
+    "goal": "在 workspace 下创建 contacts.py：load(path) 读取 JSON 文件并返回 dict（文件不存在时返回空 dict）；save(path, data) 把 dict 以 UTF-8 写回 JSON；add_contact(path, name, phone) 用 load/save 把联系人写入并返回更新后的 dict；find(path, name) 返回该联系人电话，不存在返回 None",
+    "verify": "import contacts, os, json\np = 'contacts_test.json'\nif os.path.exists(p): os.remove(p)\nassert contacts.load(p) == {}\nd = contacts.add_contact(p, 'Alice', '123')\nassert d == {'Alice': '123'}, d\nd = contacts.add_contact(p, 'Bob', '456')\nassert set(d.keys()) == {'Alice', 'Bob'}, d\nassert contacts.find(p, 'Alice') == '123'\nassert contacts.find(p, 'Zoe') is None\nwith open(p, encoding='utf-8') as f:\n    raw = json.load(f)\nassert raw['Bob'] == '456', raw\nos.remove(p)\nprint('L7 PASS')"
+  },
+  {
+    "level": 8,
+    "name": "多文件 / 大程序 + 多步规划",
+    "goal": "在 workspace 下用三个文件实现一个通讯录程序：storage.py 提供 save(path, data) 和 load(path)（JSON 持久化，文件不存在返回空 dict）；contacts.py 提供 Contacts 类，用 storage 做持久化，含 add(name, phone)、get(name)、remove(name)（名字不存在返回 False）、all_names()（返回排序后的名字列表）；cli.py 提供 run(args) 接收字符串列表参数，支持 ['add', name, phone]、['get', name]、['remove', name]、['list']，返回字符串结果",
+    "verify": "import os, cli, storage\np = 'c_test.json'\nif os.path.exists(p): os.remove(p)\nassert storage.load(p) == {}\nprint(cli.run(['add', 'Alice', '123']))\nassert cli.run(['get', 'Alice']) == '123', cli.run(['get', 'Alice'])\ncli.run(['add', 'Bob', '456'])\nr = cli.run(['list'])\nassert 'Alice' in r and 'Bob' in r, r\nassert cli.run(['remove', 'Alice']) != '', 'remove 应有反馈'\nassert cli.run(['get', 'Alice']) in ('', 'None', 'not found', '未找到'), cli.run(['get', 'Alice'])\nif os.path.exists(p): os.remove(p)\nprint('L8 PASS')"
+  }
+]

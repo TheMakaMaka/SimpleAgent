@@ -1,0 +1,25 @@
+{
+  "name": "simple-agent-webui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "SimpleAgent2_Cycle 的 Vue 3 前端：实时执行流水线可视化",
+  "scripts": {
+    "gen:expectations": "node scripts/gen-expectations.mjs",
+    "check:expectations": "node scripts/gen-expectations.mjs --check",
+    "dev": "npm run gen:expectations && vite",
+    "build": "npm run gen:expectations && vite build",
+    "typecheck": "npm run gen:expectations && vue-tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.7.3",
+    "vite": "^6.0.11",
+    "vue-tsc": "^2.2.0"
+  }
+}

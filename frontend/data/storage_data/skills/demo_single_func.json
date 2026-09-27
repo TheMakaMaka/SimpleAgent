@@ -1,0 +1,43 @@
+{
+  "id": "demo_single_func",
+  "name": "单函数生成",
+  "goal_template": "在 workspace 下创建 {filename}.py，实现 {func}({args})",
+  "files": [
+    {
+      "path": "{filename}.py",
+      "symbols": [
+        "{func}"
+      ],
+      "role": "实现"
+    }
+  ],
+  "verify_command": "import {filename}\nassert {filename}.{func}([3,1,2]) == [1,2,3]",
+  "parameters": [
+    {
+      "name": "filename",
+      "description": "文件名",
+      "example": "add",
+      "required": true
+    },
+    {
+      "name": "func",
+      "description": "函数名",
+      "example": "add",
+      "required": true
+    },
+    {
+      "name": "args",
+      "description": "参数",
+      "example": "a, b",
+      "required": true
+    }
+  ],
+  "example_code": {
+    "{filename}.py": "def add(a, b):\n    return a + b\n"
+  },
+  "verify_reason": "",
+  "created_at": "2026-09-25T21:48:35",
+  "source_cycle": "cy_demo",
+  "uses": 0,
+  "successes": 0
+}

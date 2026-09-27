@@ -1,0 +1,75 @@
+{
+  "_说明": [
+    "标定覆盖文件（可选）。放仓库根，叫 spec.override.json。",
+    "用途：改中文名、色调、可调参数，**不用改代码、不用重新构建前端**。",
+    "",
+    "重要：只能覆盖『标定』，不能覆盖『事实』。",
+    "  事实（有哪些阶段 / 哪些事件 / 哪些工具）是从代码扫出来的，",
+    "  本文件改不动它们——否则标定就会和代码说谎。",
+    "",
+    "改完生效方式：重启后端（或刷新页面）。用 GET /api/spec 可查看合并结果，",
+    "diagnostics 段会告诉你有没有写错的键。",
+    "",
+    "完整默认值见 bridge/spec.py 的 CALIBRATION 与 UI_DEFAULTS。",
+    "文件名带 .example 只是示例，真正生效的是去掉 .example 的 spec.override.json。"
+  ],
+
+  "_示例_改阶段中文名与图标": {
+    "stage_labels": { "plan": "规划", "write": "写码" },
+    "stage_hints": { "plan": "主模型把目标拆成任务" },
+    "stage_icons": { "plan": "route" }
+  },
+  "stage_labels": {},
+  "stage_hints": {},
+  "stage_icons": {},
+
+  "_示例_加一个门禁步骤（插在某个阶段之后）": {
+    "gate_after": { "manifest": "write" }
+  },
+  "gate_after": {},
+
+  "_示例_改事件的中文名与模板": {
+    "events": {
+      "plan": {
+        "label": "计划",
+        "tone": "info",
+        "panel": "plan",
+        "title": "计划：{tasks} 个任务",
+        "detail": "{verify_command}"
+      }
+    }
+  },
+  "events": {},
+
+  "_示例_改状态显示": {
+    "statuses": {
+      "relaxed": { "label": "人工放宽", "tone": "warn", "terminal": true }
+    }
+  },
+  "statuses": {},
+
+  "_示例_改工具中文名": {
+    "tool_labels": { "write_file": "落盘" }
+  },
+  "tool_labels": {},
+
+  "_示例_前端可调参数（运行期生效，不用重新构建）": {
+    "ui": {
+      "poll": { "health_ms": 15000, "runs_ms": 8000, "decisions_ms": 3000 },
+      "stream": { "reconnect_ms": 1000, "max_reconnects": 60 },
+      "limits": { "timeline": 1000, "tool_calls": 600, "reasoning": 60, "detail_chars": 500 },
+      "features": { "demo_run": true, "cancel": true, "artifact_viewer": true, "decision_inline": true },
+      "examples": [
+        {
+          "label": "我的任务",
+          "goal": "在 workspace 下创建 foo.py，实现 foo() 返回 42",
+          "verify": "import foo\nassert foo.foo() == 42\nprint('PASS')"
+        }
+      ]
+    }
+  },
+  "ui": {},
+
+  "_示例_失败终态在流水线上的落点": "必须是 CyclePhase 之一（默认 failed 由上游定义）",
+  "failure_phase": "failed"
+}

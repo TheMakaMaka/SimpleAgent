@@ -1,0 +1,369 @@
+/* ==========================================================================
+   主题与全局动画
+   —— 所有「动态执行」的视觉语言都定义在这里，组件只负责挂类名。
+   ========================================================================== */
+
+:root {
+  --bg-0: #070b14;
+  --bg-1: #0b1220;
+  --bg-2: #101a2d;
+  --bg-3: #16233b;
+
+  --line: rgba(120, 165, 220, 0.16);
+  --line-strong: rgba(120, 165, 220, 0.32);
+
+  --fg-0: #e8f1ff;
+  --fg-1: #a9bdd8;
+  --fg-2: #6d819c;
+
+  --cyan: #35e0d0;
+  --cyan-dim: rgba(53, 224, 208, 0.16);
+  --blue: #5aa9ff;
+  --violet: #a78bfa;
+  --green: #46e08a;
+  --amber: #f5c451;
+  --red: #ff6b81;
+
+  --ok: var(--green);
+  --warn: var(--amber);
+  --err: var(--red);
+  --model: var(--violet);
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 18px 40px -22px rgba(0, 0, 0, 0.95);
+  --mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'SFMono-Regular', Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+    'Hiragino Sans GB', sans-serif;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@property --ring-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--fg-0);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* 背景：网格 + 两团呼吸光晕，给「机器在运转」的底噪 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(90, 169, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(90, 169, 255, 0.055) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 25%, transparent 85%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: -20%;
+  background:
+    radial-gradient(38% 32% at 18% 8%, rgba(53, 224, 208, 0.13), transparent 70%),
+    radial-gradient(34% 30% at 86% 4%, rgba(167, 139, 250, 0.12), transparent 70%);
+  animation: aurora 18s ease-in-out infinite alternate;
+  pointer-events: none;
+  z-index: 0;
+}
+
+@keyframes aurora {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.75;
+  }
+  50% {
+    transform: translate3d(2%, 1.5%, 0) scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-2%, 2%, 0) scale(1.02);
+    opacity: 0.85;
+  }
+}
+
+/* ------------------------------ 通用零件 ------------------------------ */
+.card {
+  position: relative;
+  background: linear-gradient(180deg, rgba(22, 35, 59, 0.82), rgba(11, 18, 32, 0.88));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(6px);
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.card__title {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-1);
+  font-weight: 600;
+  margin: 0;
+}
+
+.card__body {
+  padding: 12px 14px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.muted {
+  color: var(--fg-2);
+}
+
+.tiny {
+  font-size: 11px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.7;
+  border: 1px solid var(--line-strong);
+  color: var(--fg-1);
+  white-space: nowrap;
+}
+
+.pill--ok {
+  color: var(--green);
+  border-color: rgba(70, 224, 138, 0.4);
+  background: rgba(70, 224, 138, 0.1);
+}
+.pill--warn {
+  color: var(--amber);
+  border-color: rgba(245, 196, 81, 0.4);
+  background: rgba(245, 196, 81, 0.1);
+}
+.pill--err {
+  color: var(--red);
+  border-color: rgba(255, 107, 129, 0.4);
+  background: rgba(255, 107, 129, 0.1);
+}
+.pill--live {
+  color: var(--cyan);
+  border-color: rgba(53, 224, 208, 0.45);
+  background: rgba(53, 224, 208, 0.1);
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: rgba(120, 165, 220, 0.08);
+  color: var(--fg-0);
+  padding: 8px 14px;
+  transition:
+    background 0.16s var(--ease),
+    border-color 0.16s var(--ease),
+    transform 0.12s var(--ease);
+}
+button:hover:not(:disabled) {
+  background: rgba(120, 165, 220, 0.16);
+  border-color: var(--cyan);
+}
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: linear-gradient(135deg, rgba(53, 224, 208, 0.9), rgba(90, 169, 255, 0.85));
+  border-color: transparent;
+  color: #04121a;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+button.danger {
+  border-color: rgba(255, 107, 129, 0.45);
+  color: var(--red);
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--fg-0);
+  background: rgba(4, 9, 18, 0.75);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  outline: none;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgba(53, 224, 208, 0.14);
+}
+
+label.field {
+  display: block;
+  margin-bottom: 10px;
+}
+label.field > span {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  margin-bottom: 5px;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 165, 220, 0.22);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 165, 220, 0.4);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ------------------------------ 动画工具类 ------------------------------ */
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(53, 224, 208, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 9px rgba(53, 224, 208, 0);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-5px); }
+  30% { transform: translateX(4px); }
+  45% { transform: translateX(-3px); }
+  60% { transform: translateX(2px); }
+  80% { transform: translateX(-1px); }
+}
+
+@keyframes dashFlow {
+  to {
+    stroke-dashoffset: -240;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -300% 0;
+  }
+  100% {
+    background-position: 300% 0;
+  }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@keyframes popIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.anim-in {
+  animation: fadeSlideIn 0.3s var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
