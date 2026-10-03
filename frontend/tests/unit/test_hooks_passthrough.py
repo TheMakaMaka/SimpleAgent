@@ -70,8 +70,12 @@ check("★ 旧形态只作为「说明」出现（带反引号的散文引用）
       str(old_form_lines)[:120])
 check("★ 用 inspect 向上游要签名（而不是自己记一份）",
       "inspect.signature(orig_emit)" in src)
+# P5 之后 `_emit` 由 `install()` 的**名单遍历**安装（`wrapped = make_emit_wrapper(orig)`），
+# 所以这里不再断言某一行赋值语句，而是断言两件事：
+#   ① 实现只有一份（`def _emit(self, *args, **kwargs):` 出现一次）；
+#   ② install 真的走了工厂（不是内联一份副本）。
 check("★ 实现只有一份：install() 调用工厂，不再内联副本",
-      "CodingCycle._emit = make_emit_wrapper(_orig_emit)" in src
+      "make_emit_wrapper(orig)" in src
       and src.count("def _emit(self, *args, **kwargs):") == 1,
       str(src.count("def _emit(self, *args, **kwargs):")))
 check("★ 展开 VAR_KEYWORD（否则 **payload 会被收成嵌套字典）",

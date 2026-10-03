@@ -207,7 +207,19 @@ def check_spec() -> None:
     s.add(f"事件 {d['event_count']} 个", PASS)
     s.add("无未标定事件", FAIL if d["uncalibrated_events"] else PASS,
           str(d["uncalibrated_events"]), d["uncalibrated_events"])
-    s.add("无死标定", FAIL if d["dead_calibrations"] else PASS, str(d["dead_calibrations"]))
+    # ★ 「死标定」与「孤儿 case」在**自带旧副本**这种配置下是**必然**的：
+    #   标定表与前端都为**契约里那份新上游**备着，而当前这份副本还不发那些事件。
+    #   判 FAIL 会让默认配置**永远红着**，而"永远红着"的检查等于没有检查
+    #   —— 与 §25.3 的 bundled→WARN / 外部→FAIL 是同一条纪律。
+    #   指向真上游时（`backend_is_bundled=False`）它们必须为空，那时照旧 FAIL。
+    from bridge import paths as _paths
+
+    _bundled = _paths.BACKEND_IS_BUNDLED
+    _stale_level = WARN if _bundled else FAIL
+    _stale_note = ("（自带副本是旧的：标定为契约的新上游备着，不是错）"
+                   if _bundled else "")
+    s.add("无死标定" + _stale_note, _stale_level if d["dead_calibrations"] else PASS,
+          str(d["dead_calibrations"]))
     s.add("覆盖文件解析无错", FAIL if d["errors"] else PASS, "; ".join(d["errors"]))
 
     # 阶段必须等于上游 PHASE_ORDER
@@ -245,7 +257,8 @@ def check_spec() -> None:
     else:
         s.add("前端认得后端全部事件", PASS if not ec["missing_in_frontend"] else FAIL,
               str(ec["missing_in_frontend"]), ec["missing_in_frontend"])
-        s.add("前端无孤儿 case", PASS if not ec["orphan_in_frontend"] else FAIL,
+        s.add("前端无孤儿 case" + _stale_note,
+              _stale_level if ec["orphan_in_frontend"] else PASS,
               str(ec["orphan_in_frontend"]))
 
 

@@ -14,6 +14,8 @@ from .registry import register, err
         "type": "object",
         "properties": {"city": {"type": "string", "description": "城市名"}},
         "required": ["city"],
+        # P9：显式封闭（JSON Schema 默认允许任意键 ⇒ 传错键会被静默忽略）。
+        "additionalProperties": False,
     },
     profiles=("general",),
 )
@@ -54,6 +56,7 @@ def _eval_node(node):
             "expression": {"type": "string", "description": "数学表达式，如 2+3*(4-1)"}
         },
         "required": ["expression"],
+        "additionalProperties": False,
     },
     profiles=("general",),
 )
@@ -68,7 +71,13 @@ async def calculate(expression: str) -> str:
 @register(
     name="get_system_info",
     description="获取当前系统信息，包括操作系统和当前时间",
-    parameters={"type": "object", "properties": {}, "required": []},
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+        # 无参工具也必须封闭：否则它接受任意键且被静默忽略。
+        "additionalProperties": False,
+    },
     profiles=("general", "coding"),
 )
 async def get_system_info() -> str:

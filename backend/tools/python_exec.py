@@ -64,6 +64,7 @@ def _run_sync(code: str) -> tuple[str, str, int]:
             "code": {"type": "string", "description": "完整可执行的 Python 代码"}
         },
         "required": ["code"],
+        "additionalProperties": False,
     },
     profiles=("coding",),
 )

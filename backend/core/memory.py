@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 from .task import Artifact, Task, TaskResult
 
@@ -38,6 +39,18 @@ class SharedMemory:
         #: 事后就看不到"这次为什么多跑了两轮"，而那正是最有价值的信息。
         #: 事件只能由 `CodingCycle._emit` 发出，所以这里只存事实、由 cycle 层记录。
         self.verify_rejections: list[str] = []
+        #: ★ **判据的演化**（`TRANSPARENCY-BACKEND` B1）：按发生顺序记下每一次
+        #: 候选 / 采纳 / 拒绝 / 执行结果，每条自带 `previous_command` /
+        #: `previous_passed`，因此"上一条失败了，这一条换成了什么"**不用按 seq 拼**。
+        #:
+        #: 为什么要有它：`verify_probe`（前端 bridge 发）只覆盖**被执行**的判据，
+        #: 被拒的只有 `verify_skipped`，而**"这次换判据了、上一条是失败的"这件事
+        #: 在事件流里根本读不出来** —— 实测那次 `passed` 就是这么发生的。
+        #: 判据是"目标达成"的判据本身，它的变更必须和别的关键事实一样可审计。
+        self.criterion_log: list[dict] = []
+        #: ★ **每一轮的决策依据**（A1）：`reasoning` 与这一轮打算做什么。
+        #: 原来它只出现在服务端日志里，事件流里没有 —— 前端无从显示"为什么"。
+        self.decision_log: list[dict] = []
         # 结构化上下文回流：由程序从事件流压缩出的、带可信度标注的事实块。
         # 只存**渲染结果**，不存 Snapshot 对象——这样 SharedMemory 仍不依赖 compress，
         # 也让"注入什么"这件事只有一个来源（CodingCycle 决定，memory 只负责排版）。
@@ -67,6 +80,12 @@ class SharedMemory:
         command: str,
         fingerprint: str,
         source: str = "caller",
+        artifact_hashes: dict | None = None,
+        cwd: str = "",
+        cache_cleared: int = 0,
+        cache_warning: str = "",
+        exit_code: int | None = None,
+        expect_exit: int | None = None,
     ) -> None:
         """记录验证结论。
 
@@ -74,12 +93,28 @@ class SharedMemory:
         「调用方给的判据」与「模型自拟的判据」可信度差很远，而在这之前
         外部**完全无法区分**（`VERIFY-VACUOUS` 建议 2：降级必须留痕）。
         它不参与判定 —— 判定只看退出码。
+
+        ★ P6（`TRANSPARENCY3-BACKEND`）：`artifact_hashes` 是**这次判词所描述的
+        那份产物**的内容哈希，`cwd` 是验证真正的工作目录。判词必须能与
+        **最终交付产物**逐字对账 —— 对不上就是 `invalid`（读数无效），
+        而不是 `fail`（模型不行）。
+
+        ★ P17：`exit_code` 是**执行记录**（`check_and_run` 的真实退出码）。
+        `pass` 的 `executed` 证据要求它非空 —— "有一条命令"不等于"真的执行过"，
+        没有退出码的通过说明执行事实缺失（见 `core/evidence.py`）。
         """
         self.verify_state = {
             "passed": passed,
             "detail": detail,
             "command": command,
             "source": source or "",
+            "artifact_hashes": dict(artifact_hashes or {}),
+            "cwd": cwd or "",
+            "cache_cleared": int(cache_cleared or 0),
+            "cache_warning": cache_warning or "",
+            # P17：执行事实（None = 没记录，**不拿 0 冒充**）
+            "exit_code": None if exit_code is None else int(exit_code),
+            "expect_exit": None if expect_exit is None else int(expect_exit),
         }
         self._verified_fingerprint = fingerprint
 
@@ -101,6 +136,60 @@ class SharedMemory:
         self.verify_rejections.append(
             f"模型自拟的验收判据不合格，已拒绝采纳（{detail}）"
         )
+
+    # ---------- 判据演化（B1）----------
+    def log_criterion(
+        self,
+        action: str,
+        command: str,
+        *,
+        reason: str = "",
+        passed: Optional[bool] = None,
+        detail: str = "",
+        source: str = "",
+    ) -> None:
+        """记一条判据演化。`action ∈ {adopted, rejected, executed}`。
+
+        `previous_*` 由这里**自动补齐**（取上一条"被执行过"的判据）——
+        调用点不必各自记状态，也就不会出现"某条路径忘了带前后关系"
+        （`bridge_gate_steps` 被静默丢掉那次的教训：散在各处的事实容易漏）。
+        """
+        prev_cmd, prev_passed = "", None
+        for item in reversed(self.criterion_log):
+            if item.get("action") == "executed":
+                prev_cmd = str(item.get("command") or "")
+                prev_passed = item.get("passed")
+                break
+        self.criterion_log.append({
+            "action": action,
+            "command": str(command or "")[:500],
+            "reason": str(reason or "")[:300],
+            "passed": passed,
+            "detail": str(detail or "")[:300],
+            "source": source,
+            "previous_command": prev_cmd[:500],
+            "previous_passed": prev_passed,
+        })
+
+    # ---------- 决策依据（A1）----------
+    def log_decision(self, round_no: int, data: dict) -> None:
+        """记一轮编排器决策的**依据**（`reasoning` + 这一轮打算做什么）。"""
+        tasks = []
+        for t in (data or {}).get("tasks") or []:
+            if not isinstance(t, dict):
+                continue
+            tasks.append({
+                "id": str(t.get("id") or "")[:40],
+                "description": str(t.get("description") or "")[:200],
+                "expected_output": str(t.get("expected_output") or "")[:200],
+            })
+        self.decision_log.append({
+            "round": int(round_no),
+            "status": str((data or {}).get("status") or "continue")[:40],
+            "reasoning": str((data or {}).get("reasoning") or "")[:600],
+            "tasks": tasks[:3],
+            "final_answer": str((data or {}).get("final_answer") or "")[:300],
+        })
 
     def already_verified_at(self, fingerprint: str) -> bool:
         """同一状态是否已经验证过；未变化就不必重复验证。

@@ -93,11 +93,18 @@ class Orchestrator:
         verify_skipped_reason = ""
         prior_files = get_cycle_files()
         prior_set = set(prior_files) if prior_files else None
+        #: 上一次**真的执行过且失败**的判据（同 cycle 内）。
+        #: B2 的触发条件：模型要**替换**它时，必须给理由。
+        last_failed: Optional[dict] = None
 
         for round_idx in range(self.max_rounds):
             print(f"\n===== Orchestrator 第 {round_idx + 1} / {self.max_rounds} 轮 =====")
             decision = await self._decide(memory)
             print(f"[决策] status={decision.get('status')} reasoning={decision.get('reasoning')}")
+            # ★ A1（`TRANSPARENCY-BACKEND`）：把"为什么这么决定"变成**事实**。
+            # 原来它只出现在上面那行服务端日志里，事件流里没有，
+            # 前端因此无从显示"第 2 轮为什么又去改这个文件"。
+            memory.log_decision(round_idx + 1, decision)
 
             # 计划声明的交付文件清单（后续轮次覆盖为更新的版本）
             # ⚠️ 必须**先**取本次决策的声明，再判自拟验收的可采性 ——
@@ -113,20 +120,50 @@ class Orchestrator:
                 and isinstance(raw_verify, dict)
                 and (raw_verify.get("command") or "").strip()
             ):
-                # ★ 可采性下限（`VERIFY-VACUOUS`）：自拟判据不得**恒真**。
-                # 判据必须是机器可判定的，而"命令引用了本轮交付物"这个事实
-                # 是机器可判定的（字符串匹配），不像"这句子是不是废话"要靠猜。
-                ok_adm, why = self._model_verify_admissible(
-                    raw_verify, self._deliverables(memory, declared_files)
-                )
-                if ok_adm:
-                    verify_command = raw_verify
-                    memory.verify_untrusted = ""
+                new_cmd = str(raw_verify.get("command") or "").strip()
+                why_reason = str(raw_verify.get("reason") or "").strip()
+                # ★ B2（用户裁决的行为改动）：**换掉一条已执行且失败的判据 → 必须给理由**。
+                # 实测那次 `passed` 的根因就在这里：判据 A 真跑过、真失败，
+                # 随后被换成一条必过的 B，**代码一行没改**，流程据此记 passed。
+                # 用户选的是"留痕 + 必须给理由"（不是禁止换）：
+                # 换判据在某些情况下是正当的（前一条自己写错了、环境缺依赖），
+                # 但**必须看得见**。没给理由 → 不采纳（走显式失败，不静默）。
+                replacing = bool(last_failed) and new_cmd != (
+                    last_failed or {}
+                ).get("command", "")
+                if replacing and not why_reason:
+                    why_b2 = (
+                        "要替换一条**已执行且失败**的判据（上一条："
+                        f"{(last_failed or {}).get('command', '')[:60]!r}），"
+                        "但 verify.reason 是空的 —— 换判据必须给理由，"
+                        "否则无法区分「修正了判据自身的问题」与「把考卷换成一张必过的」"
+                    )
+                    memory.reject_verify(raw_verify, why_b2)
+                    memory.log_criterion("rejected", new_cmd, reason=why_b2,
+                                         passed=False, source="model")
+                    print(f"[verify] 拒绝采纳模型自拟的验收判据：{why_b2}")
                 else:
-                    # **不清空**已经采纳过的命令：本轮给出坏判据，不该把
-                    # 前几轮已经采纳的好判据一起作废。
-                    memory.reject_verify(raw_verify, why)
-                    print(f"[verify] 拒绝采纳模型自拟的验收判据：{why}")
+                    # ★ 可采性下限（`VERIFY-VACUOUS` + `TRANSPARENCY-BACKEND` B3）：
+                    # 自拟判据不得**恒真**，且**必须真的调用**交付物
+                    # （`assert generate_obstacles` 引用得到、却从不调用 → 恒真）。
+                    ok_adm, why = self._model_verify_admissible(
+                        raw_verify, self._deliverables(memory, declared_files)
+                    )
+                    if ok_adm:
+                        verify_command = raw_verify
+                        memory.verify_untrusted = ""
+                        memory.log_criterion(
+                            "adopted", new_cmd,
+                            reason=why_reason or "(未给理由)",
+                            passed=None, source="model",
+                        )
+                    else:
+                        # **不清空**已经采纳过的命令：本轮给出坏判据，不该把
+                        # 前几轮已经采纳的好判据一起作废。
+                        memory.reject_verify(raw_verify, why)
+                        memory.log_criterion("rejected", new_cmd, reason=why,
+                                             passed=False, source="model")
+                        print(f"[verify] 拒绝采纳模型自拟的验收判据：{why}")
 
             status = decision.get("status", "continue")
             if status == "done":
@@ -206,22 +243,46 @@ class Orchestrator:
                             command=verify_command.get("command", ""),
                             reason=verify_command.get("reason", "") or "",
                         )
-                        vr = await self.pipeline.run_verify(vc)
+                        vr = await self.pipeline.run_verify(vc, files)
+                        passed = bool(vr.get("passed"))
+                        detail = self._verify_detail(vr)
                         memory.set_verify(
-                            passed=bool(vr.get("passed")),
-                            detail=self._verify_detail(vr),
+                            passed=passed,
+                            detail=detail,
                             command=vc.label(),
                             fingerprint=fp,
                             # ★ 判据**来源**留痕（`VERIFY-VACUOUS` 建议 2）：
                             # "调用方给的"与"模型自拟的"可信度差很远，
                             # 而在这之前外部**完全无法区分**。
                             source="caller" if caller_verify else "model",
+                            # ★ P6：判词必须描述产物 —— 记下被验证产物的内容哈希、
+                            # 验证的工作目录、以及是否清过字节码缓存。
+                            artifact_hashes=vr.get("artifact_hashes") or {},
+                            cwd=str(vr.get("cwd") or ""),
+                            cache_cleared=int(vr.get("cache_cleared") or 0),
+                            cache_warning=str(vr.get("cache_warning") or ""),
+                            # ★ P17：**执行记录**（真实退出码 + 期望值）。
+                            # pass 的 executed 证据要求它非空 —— 没有它，
+                            # "通过"就只是模型自述（见 core/evidence.py）。
+                            exit_code=(vr.get("parsed") or {}).get("exit_code"),
+                            expect_exit=vr.get("expect_exit"),
                         )
+                        # ★ B1：判据**被执行**这件事本身也要留痕（含结果）。
+                        # 原来这条事实只存在于前端 bridge 的 `verify_probe` 里，
+                        # 于是"上一条真跑过、真失败"在**上游事件流**里读不出来。
+                        memory.log_criterion(
+                            "executed", vc.label(),
+                            passed=passed, detail=detail,
+                            source="caller" if caller_verify else "model",
+                        )
+                        if not passed:
+                            # B2 的触发条件：这一条已执行且失败。
+                            last_failed = {"command": vc.label(), "detail": detail}
                         # 验证真的跑过了 → 之前"被跳过"的理由作废
                         verify_skipped_reason = ""
                         memory.verify_untrusted = ""
                         print(
-                            f"[验证回流] passed={vr.get('passed')} "
+                            f"[验证回流] passed={passed} "
                             f"detail={memory.verify_state['detail'][:120]}"
                         )
                         if vr.get("passed"):
@@ -400,27 +461,101 @@ class Orchestrator:
                 hit.append(path)
         return hit
 
+    @staticmethod
+    def _module_names_for(path: str) -> set[str]:
+        """某个 `.py` 交付物**可以被 import 成什么名字**。非 `.py` 返回空集。
+
+        `obstacle_generator.py`      → {`obstacle_generator`}
+        `src/add.py`                 → {`src.add`, `add`}
+        `pkg/__init__.py`            → {`pkg.__init__`, `pkg`}
+        """
+        norm = (path or "").replace("\\", "/")
+        if not norm.endswith(".py"):
+            return set()
+        dotted = norm[:-3].replace("/", ".")
+        base = dotted.rsplit(".", 1)[-1]
+        names = {dotted}
+        if base == "__init__":
+            pkg = dotted.rsplit(".", 1)[0] if "." in dotted else ""
+            if pkg:
+                names.add(pkg)
+        else:
+            names.add(base)
+        return {n for n in names if n}
+
+    @staticmethod
+    def _called_modules(command: str) -> set[str]:
+        """命令**调用进了哪些模块**（AST 上真的出现了 `Call`）。
+
+        `import mod` + `mod.f(1)`            → {`mod`, `mod.f`}（前缀都算）
+        `from mod import f` + `f(1)`         → {`f`, `mod`}（按 import 别名解析回去）
+        `assert mod.f`（**没有括号**）        → 空集 ← 这正是要拦住的那一类
+        `import numpy as np` + `np.array(...)` → {`np`, `numpy`, ...}
+        """
+        import ast
+
+        try:
+            tree = ast.parse(command)
+        except SyntaxError:
+            return set()
+
+        def dotted(node) -> str:
+            parts: list[str] = []
+            while isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+            if isinstance(node, ast.Name):
+                parts.append(node.id)
+                return ".".join(reversed(parts))
+            return ""
+
+        alias: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    alias[a.asname or a.name.split(".")[0]] = a.name
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and not node.level:
+                    for a in node.names:
+                        alias[a.asname or a.name] = node.module
+
+        out: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = dotted(node.func)
+            if not name:
+                continue
+            parts = name.split(".")
+            for i in range(1, len(parts) + 1):
+                out.add(".".join(parts[:i]))
+            # `from mod import f` 之后调用 `f(...)` —— 调的是 mod 里的符号
+            if parts[0] in alias:
+                out.add(alias[parts[0]])
+        return out
+
     @classmethod
     def _model_verify_admissible(
         cls, raw_verify: dict, deliverables: list[str]
     ) -> tuple[bool, str]:
-        """模型自拟的验收判据**可采性下限**（变更编号 `VERIFY-VACUOUS`）。
+        """模型自拟的验收判据**可采性下限**。
 
-        背景（缺陷）：调用方不给 `verify_command` 时采纳模型自拟的 verify，
-        而唯一的门槛是"非空且可执行"。`qwen2.5:7b` 于是给出 `print('PASS')` ——
-        **恒真**。`FIX-VERIFY-WIRING` 让这条命令真的被执行之后，"什么都没做"
-        也会被判成成功（真实运行 `cy_20260926_154707_882595`：
-        `declared=0` + `checked=False` + `steps=0` + `print('PASS')` → `phase=record`，
-        而工作区里根本没有产出报告）。
+        三层，逐层收紧（每一层都是实测踩出来的）：
 
-        为什么判据选"引用交付物"而不是"识别废话"：
+        1. **不得恒真**（`VERIFY-VACUOUS`）：本轮必须有交付物，且判据必须**引用**它。
+           反例：`print('PASS')`。
+        2. **引用 ≠ 执行**（`TRANSPARENCY-BACKEND` B3）：判据引用了 `.py` 交付物时，
+           必须**调用**它。反例：`from obstacle_generator import generate_obstacles`
+           + `assert generate_obstacles` —— 引用得到、却从不调用，于是恒真。
+           **这条是实测那次假 `passed` 里唯一能被拦住的规则。**
+
+        为什么判据选"引用/调用交付物"而不是"识别废话"：
         `docs/CHANGE-PROCESS.md` C2 要求每条主张可机器验证，判据本身也一样 ——
-        "命令里出现了某个交付物的路径/文件名/词干"是**字符串事实**，
-        而"这条命令是不是恒真"在一般情况下不可判定。取一个**可判定的下限**，
-        胜过写一个看起来很聪明、实则判宽了的启发式。
+        "命令里出现了交付物、并且 AST 上真的调用了它"是**可判定的事实**，
+        而"这条命令是不是恒真"在一般情况下不可判定。
 
-        **边界（刻意如此）**：这条例只作用于**自拟**判据。调用方给了
-        `verify_command` 时，验收标准是调用方的权威，本方法不参与。
+        **边界（刻意如此）**：只作用于**自拟**判据。调用方给了 `verify_command` 时，
+        验收标准是调用方的权威，本方法不参与。
         """
         command = str(raw_verify.get("command") or "")
         if not deliverables:
@@ -429,11 +564,24 @@ class Orchestrator:
                 "自拟的验收无从判定 —— 一份交付声明都没有，就说不出「交付了什么」，"
                 "因此不该有「验证通过」这个结论"
             )
-        if not cls._verify_references(command, deliverables):
+        hit = cls._verify_references(command, deliverables)
+        if not hit:
             return False, (
                 f"自拟的验收命令没有引用本轮任何交付物 {deliverables[:5]}，"
                 "疑为恒真判据（例：print('PASS')）"
             )
+        # B3：引用了 `.py` 交付物 → 必须真的调用它
+        py_refs = [d for d in hit if d.replace("\\", "/").endswith(".py")]
+        if py_refs:
+            called = cls._called_modules(command)
+            silent = [d for d in py_refs if not (cls._module_names_for(d) & called)]
+            if silent:
+                return False, (
+                    f"自拟的验收命令引用了 {silent[:3]} 却**没有调用**它："
+                    "只写 `assert 名字`、只检查文件存在，都不算执行过 —— "
+                    "必须真的调用交付物（如 `import mod` 后 `mod.func(...)`，"
+                    "或 `from mod import func` 后 `func(...)`）"
+                )
         return True, ""
 
     @staticmethod

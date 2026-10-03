@@ -103,6 +103,7 @@ def parse_traceback_text(raw: str) -> dict[str, Any]:
             "raw": {"type": "string", "description": "原始 traceback 文本"}
         },
         "required": ["raw"],
+        "additionalProperties": False,
     },
     profiles=("coding",),
 )

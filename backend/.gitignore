@@ -6,11 +6,17 @@ storage_data/
 tests/output/
 sessions/*.json
 .ruff_cache/
+# 每轮的一次性临时件（角色简报约定：临时产物一律放 .tmp/ 或系统临时目录）
+.tmp/
 
 # workspace 是 agent 的产出目录，且**内部含一个独立 git 仓库**（回退机制用）。
 # 直接提交会被 git 当成嵌套仓库（只记 gitlink，不记内容），容易踩坑。
 # 若确实想公开模型产出的示例代码，见 docs/PUSH_TO_GITHUB.md 的「方式 2」。
 workspace/
+
+# outputs/ 是**输出根**（P14 交付物落这里）—— 运行产物，不入库。
+# 路径可由 AGENT_OUTPUT_DIR 覆盖（见 .env.example / core/runtime.py）。
+outputs/
 
 # ============================================================
 # 本地凭据与配置 —— 绝不入库

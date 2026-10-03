@@ -74,6 +74,7 @@ def _run_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
             "code": {"type": "string", "description": "要检查的 Python 代码"}
         },
         "required": ["code"],
+        "additionalProperties": False,
     },
     profiles=("coding",),
 )
@@ -106,6 +107,7 @@ async def check_syntax(code: str) -> str:
             "code": {"type": "string", "description": "要检查的 Python 代码"}
         },
         "required": ["code"],
+        "additionalProperties": False,
     },
     profiles=("coding",),
 )
@@ -160,14 +162,21 @@ async def run_lint(code: str) -> str:
 @register(
     name="list_workspace",
     description=(
-        "列出 workspace 目录下的所有文件，含相对路径、大小、扩展名。"
+        "列出**目标项目根**（设了任务级 project_root 就是它，否则是 workspace）"
+        "下的所有文件，含相对路径、大小、扩展名。"
         "不确定有哪些文件时先调用此工具。"
     ),
-    parameters={"type": "object", "properties": {}, "required": []},
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+        # 无参工具也必须封闭（否则"任意键都收、静默忽略"）。
+        "additionalProperties": False,
+    },
     profiles=("coding",),
 )
 async def list_workspace() -> str:
-    """列出 workspace 里的文件（供模型了解当前目录）。
+    """列出目标根里的文件（供模型了解当前目录）。
 
     ⚠️ 跳过策略与 `core/symbol_index.build_index` **共用同一份常量** ——
     实测事故（CHANGELOG §29）：本函数原来只过滤 `_` 开头的目录，
@@ -175,11 +184,15 @@ async def list_workspace() -> str:
     后果不只是费 token：模型照单全收，把 `.git/COMMIT_EDITMSG` 之类
     写进了本该只含业务文件的交付物里。
 
-    `os.path.abspath("workspace")` 依赖进程 CWD（既有约束，见 README 已知限制）。
+    ★ P15（2026-10-03）：根不再是写死的 `os.path.abspath("workspace")`，
+    而是 `core.runtime.effective_root()` —— 设了任务级目标项目根就扫它，
+    这样「把 agent 指向一个已有代码库」才有落脚点。返回里显式给出
+    `root` / `scope`，读的人不必猜。
     """
+    from core import runtime
     from core.symbol_index import _SKIP_DIRS
 
-    base = os.path.abspath("workspace")
+    base = runtime.effective_root()
     files = []
     total = 0
     for root, dirs, names in os.walk(base):
@@ -205,7 +218,15 @@ async def list_workspace() -> str:
     return json.dumps(
         {
             "ok": True,
+            # 兼容键：始终是**被扫描的那个根**（P15 起可随任务级 project_root 变化）
             "workspace": base,
+            "root": base,
+            "scope": {
+                "source": runtime.effective_root_source(),
+                "project_root": runtime.project_root(),
+                "workspace_root": runtime.workspace_root(),
+                "output_root": runtime.output_root(),
+            },
             # 被跳过的目录名（让模型知道"看不见"不等于"不存在"）
             "skipped_dir_names": sorted(_SKIP_DIRS),
             "total": total,

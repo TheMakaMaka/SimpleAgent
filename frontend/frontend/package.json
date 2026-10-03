@@ -7,6 +7,7 @@
   "scripts": {
     "gen:expectations": "node scripts/gen-expectations.mjs",
     "check:expectations": "node scripts/gen-expectations.mjs --check",
+    "check:transparency": "node scripts/replay-check.mjs --assert",
     "dev": "npm run gen:expectations && vite",
     "build": "npm run gen:expectations && vite build",
     "typecheck": "npm run gen:expectations && vue-tsc --noEmit",

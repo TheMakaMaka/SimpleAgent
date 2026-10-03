@@ -15,6 +15,283 @@
 
 ---
 
+## `v20-safe-contract` · 2026-09-28 22:30:22
+
+| 项 | 值 |
+|---|---|
+| 还原点 | `20260928-223020_v20-safe-contract` |
+| 验证结果 | 单测 38/38 · layout 通过 · typecheck 零错误 · dist 新鲜 · 端到端 17/17 |
+| 改了什么 | 13 改动 / 1 新增 / 0 删除（对比 `20260928-212704_v19-p5b-hook-globals`） |
+| 对比基准 | `20260928-212704_v19-p5b-hook-globals` |
+
+**这一版做到了什么**
+
+P6：_safe 契约修正（只放行 RunCancelled，普通异常真的被吞）+ emit_safe/parse_worker_args 让 payload 构造也在保护内；新增判据 H/I 与注入故障的端到端证据；修掉两处扫描器只认旧 emit 写法（会导致事件静默少认）；真实运行 run_20260928_221959_80417d passed
+
+**改动清单**（机械核对，取自 `backup.ps1 -Verify`）
+
+```
+  ~ bridge\hooks.py
+  ~ bridge\spec.py
+  ~ CYCLE.md
+  ~ docs\ARCHITECTURE.md
+  ~ docs\CHANGELOG.md
+  ~ docs\EVALUATION-HOOKS-PASSTHROUGH-2.md
+  ~ docs\MODULES.md
+  ~ docs\OPERATIONS.md
+  ~ docs\VERSIONS.md
+  ~ README.md
+  ~ tests\diagnostics\hook_verify_e2e.py
+  ~ tests\unit\test_event_contract.py
+  ~ tests\unit\test_hook_compat.py
+  + docs\EVALUATION-SAFE-CONTRACT.md
+```
+
+**还原**
+
+```powershell
+.\scripts\backup.ps1 -Verify  -From 20260928-223020_v20-safe-contract
+.\scripts\backup.ps1 -Restore -From 20260928-223020_v20-safe-contract
+```
+
+---
+## `v19-p5b-hook-globals` · 2026-09-28 21:27:05
+
+| 项 | 值 |
+|---|---|
+| 还原点 | `20260928-212704_v19-p5b-hook-globals` |
+| 验证结果 | 单测 38/38 · layout 通过 · typecheck 零错误 · dist 新鲜 · 端到端 17/17 |
+| 改了什么 | 11 改动 / 1 新增 / 0 删除（对比 `20260928-091633_v18-hooks-passthrough`） |
+| 对比基准 | `20260928-091633_v18-hooks-passthrough` |
+
+**这一版做到了什么**
+
+P5b 阻塞修复：挂钩体不再引用只在函数内 import 的名字（worker_cls 延迟取类 + _safe 包住解析）；新增门禁：ruff F821 --ignore-noqa 零命中 + dis 扫 LOAD_GLOBAL + Worker._invoke 生产路径冒烟；harness 改为不绕过任何挂钩点；真实运行 run_20260928_212052_3d1143 passed
+
+**改动清单**（机械核对，取自 `backup.ps1 -Verify`）
+
+```
+  ~ bridge\hooks.py
+  ~ CYCLE.md
+  ~ docs\ARCHITECTURE.md
+  ~ docs\CHANGELOG.md
+  ~ docs\EVALUATION-TRANSPARENCY2-UI.md
+  ~ docs\MODULES.md
+  ~ docs\OPERATIONS.md
+  ~ docs\VERSIONS.md
+  ~ README.md
+  ~ tests\diagnostics\hook_verify_e2e.py
+  ~ tests\unit\test_hook_compat.py
+  + docs\EVALUATION-HOOKS-PASSTHROUGH-2.md
+```
+
+**还原**
+
+```powershell
+.\scripts\backup.ps1 -Verify  -From 20260928-212704_v19-p5b-hook-globals
+.\scripts\backup.ps1 -Restore -From 20260928-212704_v19-p5b-hook-globals
+```
+
+---
+## `v18-hooks-passthrough` · 2026-09-28 09:16:34
+
+| 项 | 值 |
+|---|---|
+| 还原点 | `20260928-091633_v18-hooks-passthrough` |
+| 验证结果 | 单测 38/38 · layout 通过 · typecheck 零错误 · dist 新鲜 · 端到端 17/17 |
+| 改了什么 | 13 改动 / 2 新增 / 0 删除（对比 `20260928-000917_v17-transparency2-ui`） |
+| 对比基准 | `20260928-000917_v17-transparency2-ui` |
+
+**这一版做到了什么**
+
+P5 阻塞修复：11 个挂钩点全部改成透传（HOOK_POINTS 唯一名单 + make_hook 工厂，同步/异步问上游）；新增 test_hook_compat（含负向）与 hook_verify_e2e（离线真跑到 verify）；契约 v1.0.26 使滞后表第二次到期清空
+
+**改动清单**（机械核对，取自 `backup.ps1 -Verify`）
+
+```
+  ~ bridge\hooks.py
+  ~ bridge\partition.py
+  ~ CYCLE.md
+  ~ docs\ARCHITECTURE.md
+  ~ docs\CHANGELOG.md
+  ~ docs\DIAGNOSTICS.md
+  ~ docs\EVALUATION-TRANSPARENCY2-UI.md
+  ~ docs\MODULES.md
+  ~ docs\OPERATIONS.md
+  ~ docs\VERSIONS.md
+  ~ README.md
+  ~ tests\unit\test_event_contract.py
+  ~ tests\unit\test_hooks_passthrough.py
+  + tests\diagnostics\hook_verify_e2e.py
+  + tests\unit\test_hook_compat.py
+```
+
+**还原**
+
+```powershell
+.\scripts\backup.ps1 -Verify  -From 20260928-091633_v18-hooks-passthrough
+.\scripts\backup.ps1 -Restore -From 20260928-091633_v18-hooks-passthrough
+```
+
+---
+## `v17-transparency2-ui` · 2026-09-28 00:09:19
+
+| 项 | 值 |
+|---|---|
+| 还原点 | `20260928-000917_v17-transparency2-ui` |
+| 验证结果 | 单测 37/37 · layout 通过 · typecheck 零错误 · dist 新鲜 · 端到端 17/17 |
+| 改了什么 | 27 改动 / 7 新增 / 2 删除（对比 `20260927-135246_v16.1-transparency-ui-docs`） |
+| 对比基准 | `20260927-135246_v16.1-transparency-ui-docs` |
+
+**这一版做到了什么**
+
+TRANSPARENCY2-UI：P1 交付新鲜度（dist vs src，含负向门禁与备份前检查）、P2 任务面板（不压缩/内部滚动/自动跟随/折叠已完成，19 任务实测）、P3 结局四值+判据来源+独立性、P4 拆解合规审查（violated 与 undecidable 分开）；契约 v1.0.25 滞后表换批；新增 fix_bom
+
+**改动清单**（机械核对，取自 `backup.ps1 -Verify`）
+
+```
+  ~ bridge\partition.py
+  ~ bridge\runner.py
+  ~ bridge\spec.py
+  ~ CYCLE.md
+  ~ docs\ARCHITECTURE.md
+  ~ docs\CHANGELOG.md
+  ~ docs\DIAGNOSTICS.md
+  ~ docs\MODULES.md
+  ~ docs\OPERATIONS.md
+  ~ docs\VERSIONS.md
+  ~ frontend\dist\index.html
+  ~ frontend\scripts\replay-check.mjs
+  ~ frontend\src\App.vue
+  ~ frontend\src\components\TaskPanel.vue
+  ~ frontend\src\components\TransparencyPanel.vue
+  ~ frontend\src\components\VerifyPanel.vue
+  ~ frontend\src\generated\expectations.ts
+  ~ frontend\src\store\run.ts
+  ~ frontend\src\store\transparency.ts
+  ~ frontend\src\types.ts
+  ~ README.md
+  ~ scripts\backup.ps1
+  ~ tests\diagnostics\make_transparency_fixture.py
+  ~ tests\fixtures\transparency-fixture.json
+  ~ tests\unit\test_event_contract.py
+  ~ tests\unit\test_partition.py
+  ~ tests\unit\test_transparency_ui.py
+  + docs\EVALUATION-TRANSPARENCY2-UI.md
+  + frontend\dist\assets\index-Bu5N1N67.js
+  + frontend\dist\assets\index-yo24bi27.css
+  + frontend\src\store\tasklist.ts
+  + scripts\fix_bom.py
+  + scripts\freshness.py
+  + tests\unit\test_dist_freshness.py
+  - frontend\dist\assets\index-BcJOtip4.js
+  - frontend\dist\assets\index-DZFXNCxx.css
+```
+
+**还原**
+
+```powershell
+.\scripts\backup.ps1 -Verify  -From 20260928-000917_v17-transparency2-ui
+.\scripts\backup.ps1 -Restore -From 20260928-000917_v17-transparency2-ui
+```
+
+---
+## `v16.1-transparency-ui-docs` · 2026-09-27 13:52:47
+
+| 项 | 值 |
+|---|---|
+| 还原点 | `20260927-135246_v16.1-transparency-ui-docs` |
+| 验证结果 | 单测 36/36 · layout 通过 · typecheck 零错误 · 端到端 17/17 |
+| 改了什么 | 5 改动 / 0 新增 / 1 删除（对比 `20260927-134929_v16-transparency-ui`） |
+| 对比基准 | `20260927-134929_v16-transparency-ui` |
+
+**这一版做到了什么**
+
+TRANSPARENCY-UI 收尾：契约滞后按方向分流（CONTRACT_LAG_KINDS）、前端词表含采集器声明、doctor 按配置分流、九节评估文档与文档同步
+
+**改动清单**（机械核对，取自 `backup.ps1 -Verify`）
+
+```
+  ~ docs\CHANGELOG.md
+  ~ docs\DIAGNOSTICS.md
+  ~ docs\EVALUATION-TRANSPARENCY-UI.md
+  ~ docs\MODULES.md
+  ~ docs\VERSIONS.md
+  - tmp_doc2.txt
+```
+
+**还原**
+
+```powershell
+.\scripts\backup.ps1 -Verify  -From 20260927-135246_v16.1-transparency-ui-docs
+.\scripts\backup.ps1 -Restore -From 20260927-135246_v16.1-transparency-ui-docs
+```
+
+---
+## `v16-transparency-ui` · 2026-09-27 13:49:30
+
+| 项 | 值 |
+|---|---|
+| 还原点 | `20260927-134929_v16-transparency-ui` |
+| 验证结果 | 单测 36/36 · layout 通过 · typecheck 零错误 · 端到端 17/17 |
+| 改了什么 | 25 改动 / 11 新增 / 2 删除（对比 `20260927-105719_v15-verify-skipped`） |
+| 对比基准 | `20260927-105719_v15-verify-skipped` |
+
+**这一版做到了什么**
+
+TRANSPARENCY-UI：四块「为什么」视图（A2/A3/B4/C3）+ D3 结局四值与判据来源；上游三个新事件（orchestrator_round/verify_criterion/self_report）的校准与采集；契约滞后按方向分流
+
+**改动清单**（机械核对，取自 `backup.ps1 -Verify`）
+
+```
+  ~ bridge\partition.py
+  ~ bridge\spec.py
+  ~ CYCLE.md
+  ~ docs\ARCHITECTURE.md
+  ~ docs\CHANGELOG.md
+  ~ docs\DIAGNOSTICS.md
+  ~ docs\MODULES.md
+  ~ docs\OPERATIONS.md
+  ~ docs\VERSIONS.md
+  ~ frontend\dist\index.html
+  ~ frontend\package.json
+  ~ frontend\README.md
+  ~ frontend\scripts\gen-expectations.mjs
+  ~ frontend\src\App.vue
+  ~ frontend\src\components\TaskPanel.vue
+  ~ frontend\src\components\VerifyPanel.vue
+  ~ frontend\src\generated\expectations.ts
+  ~ frontend\src\store\run.ts
+  ~ frontend\src\types.ts
+  ~ README.md
+  ~ scripts\doctor.py
+  ~ tests\diagnostics\check_contract_report.py
+  ~ tests\unit\test_audit.py
+  ~ tests\unit\test_event_contract.py
+  ~ tests\unit\test_partition.py
+  + docs\EVALUATION-TRANSPARENCY-UI.md
+  + frontend\dist\assets\index-BcJOtip4.js
+  + frontend\dist\assets\index-DZFXNCxx.css
+  + frontend\scripts\replay-check.mjs
+  + frontend\src\components\TransparencyPanel.vue
+  + frontend\src\store\args.ts
+  + frontend\src\store\transparency.ts
+  + tests\diagnostics\make_transparency_fixture.py
+  + tests\fixtures\transparency-fixture.json
+  + tests\unit\test_transparency_ui.py
+  + tmp_doc2.txt
+  - frontend\dist\assets\index-OwZY1JQb.css
+  - frontend\dist\assets\index--XpunQ0C.js
+```
+
+**还原**
+
+```powershell
+.\scripts\backup.ps1 -Verify  -From 20260927-134929_v16-transparency-ui
+.\scripts\backup.ps1 -Restore -From 20260927-134929_v16-transparency-ui
+```
+
+---
 ## `v15-verify-skipped` · 2026-09-27 10:57:20
 
 | 项 | 值 |

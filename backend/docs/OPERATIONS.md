@@ -1,6 +1,6 @@
 # 运维与升级手册
 
-> **同步至 CHANGELOG §34** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 面向日常运维、模型接入与升级回归。架构原理见 `docs/ARCHITECTURE.md`，
 > 模块签名见 `docs/MODULES.md`，流程契约见 `CYCLE.md`。
@@ -555,6 +555,71 @@ python tests/diagnostics/repro_user_goal.py     # 真实形态跑一轮，断言
 3. 若你确认判据是合理的却被拒，**报 bug 并附 `memory.verify_untrusted` 原文**
    —— 那说明下限写宽/写窄了，属于要改的代码而不是要绕过的门禁。
 
+### 4.12 报「引用了 … 却**没有调用**它」
+
+**症状**：`error` / `verify_skipped.reason` 含
+
+```
+自拟的验收命令引用了 ['ant_colony.py'] 却**没有调用**它：只写 `assert 名字`、
+只检查文件存在，都不算执行过 —— 必须真的调用交付物（如 `import mod` 后
+`mod.func(...)`，或 `from mod import func` 后 `func(...)`）
+```
+
+**这是什么**（`TRANSPARENCY-BACKEND` B3）：自拟判据引用了 `.py` 交付物时，
+必须**真的调用**它。`assert generate_obstacles`（只断言名字存在）恒真 ——
+实测那次假 `passed` 正是它。
+
+| 写法 | 判定 |
+|---|---|
+| `assert generate_obstacles` / `assert mod.func` | **不合格**（引用了但没调用） |
+| `assert os.path.exists('add.py')` | **不合格**（只检查存在）★ 已知误伤，见 §9.2 |
+| `import mod` + `mod.func(1)` | 合格 |
+| `from mod import func` + `func(1)` | 合格 |
+| 数据交付物（`report.txt` 等） | 不受本条影响，仍按 §4.11 的"引用"判 |
+
+**处理**：让模型给出**会调用**的判据（提示词里已写）。若目标本来就只是"文件要存在"，
+由**调用方**给 `verify_command`（调用方的判据不受下限约束）。
+
+### 4.13 报「换判据必须给理由」
+
+**症状**：
+
+```
+要替换一条**已执行且失败**的判据（上一条：…），但 verify.reason 是空的
+—— 换判据必须给理由，否则无法区分「修正了判据自身的问题」与「把考卷换成一张必过的」
+```
+
+**这是什么**（B2，用户裁决的行为改动）：同一个 cycle 内，
+**换掉一条已经执行过且失败**的判据时，模型必须在 `verify.reason` 里写清为什么换。
+没写 → 新判据**不被采纳** → 走显式失败。
+
+**注意**：**允许**换判据（前一条自己写错、环境缺依赖都是正当理由），
+但必须看得见 —— 判据的演化全部记在 `verify_criterion` 事件里
+（`action` / `command` / `reason` / `previous_command` / `previous_passed`）。
+
+**怎么查**：
+
+```bash
+python -c "from storage.store import default_storage;print([(e.payload.get('action'),e.payload.get('previous_passed'),e.payload.get('reason')) for e in default_storage().get_events() if e.kind=='verify_criterion'])"
+```
+
+### 4.14 自述说"做完了"但事实不是 —— 看 `self_report.fact_check`
+
+**症状**：`report.self_report.fact_check.contradictions` 非空，例如
+
+```
+[artifact-missing] 自述声称已产出 `report.txt` ←→ 磁盘/清单里没有这个文件
+[verify-claim-vs-fact] 自述声称 verify_passed=True ←→ 本轮**没有验证结论**
+[lint-failed-not-disclosed] 自述给人以「检查通过」的印象 ←→ lint 有 2 处 failed
+```
+
+**这是什么**（C2）：收尾自述**必须与机械事实交叉核对**，
+否则它就是第二个"模型自嗨"通道。自述**不改判定** ——
+`phase`/`verify`/`commit` 仍由机械事实决定，`fact_check` 只是把矛盾摆出来。
+
+**注意**：`self_report.ok=false` 是**另一回事** —— 那表示自述**没生成出来**
+（带 `error`），不是"模型说没事"。
+
 ---
 
 ## 5. 如何看 `CycleReport`
@@ -649,6 +714,35 @@ violation 种类见 `docs/MODULES.md` §9。
 | `phase=record`，`check.status=skipped` | 本轮没有 `.py` 改动 → 静态检查**没跑**（不是"跑了并通过"） |
 | `phase=failed`，`commit=null`，`rolled_back=true` | 全部尝试失败，已回退 |
 | `success` 但 `error` 非空 | **不应发生**：成功路径会清空 `error` 与 `rolled_back` |
+| `error` 含 `却没有调用` | 自拟判据引用了 `.py` 交付物但没调用它（B3，见 §4.12） |
+| `error` 含 `换判据必须给理由` | 换掉了已失败的判据却没写 `verify.reason`（B2，见 §4.13） |
+| `self_report.fact_check.contradictions` 非空 | **模型自述与机械事实矛盾**（见 §4.14）—— 判定不受影响 |
+| `self_report.ok=false` | 自述**没生成出来**（带 `error`），不是"模型说没事" |
+| 想看"为什么这么决策" | `orchestrator_round` 事件（`reasoning` + 这一轮的 `tasks`） |
+| 想看"判据怎么变的" | `verify_criterion` 事件（含 `previous_command` / `previous_passed`） |
+
+### 5.5 `self_report` 结构（收尾自述 + 交叉核对）
+
+```json
+{
+  "ok": true, "error": "",
+  "done": ["..."], "not_done": ["..."], "why": ["..."],
+  "reflections": ["..."], "approach": ["..."],
+  "confidence": {"level": "low", "basis": "..."},
+  "open_questions": ["..."],
+  "requirements": [{"text": "...", "status": "done|not_done|unknown", "evidence": "..."}],
+  "claims": {"verify_passed": null, "check_passed": null, "artifacts": []},
+  "fact_check": {"checked": true, "contradictions": [], "unmentioned": [],
+                 "notes": [], "facts": {...}}
+}
+```
+
+三条必须记住的：
+
+1. **它不改判定**：`phase` / `verify` / `commit` 由机械事实决定，与自述无关；
+2. **`ok=false` 是"自述没生成出来"**（带 `error`），不是"模型说没事"；
+3. **`fact_check.contradictions` 是结论性的负面信息**，前端宜放在最显眼处
+   （折叠起来等于这个机制白做）。
 
 ---
 
@@ -694,7 +788,7 @@ from . import mytool   # noqa: F401
 | 4 | **`ok: null` 有明确语义**：表示"**未执行**"，不是"通过"。参考 `run_lint` 在 ruff 缺失时的返回。不要用 `ok: true` 表示跳过。 |
 | 5 | **是否会被门禁使用**：只有 `check_syntax`、`run_lint`、`check_and_run` 参与门禁（由 `CheckPipeline` 按**名字硬编码**调用）。新工具默认只是模型可选，不参与成败判定。若要让新工具进门禁，需改 `core/pipeline.py`。 |
 | 6 | **避免与 `review_code` 职责重叠**。`review_code` 是**质量建议**（不决定成败）；若你的工具要产出判据，它应进 `CheckPipeline` 而**不是**注册成模型工具——否则模型可以绕过它。 |
-| 7 | **路径安全**：写文件类工具请复用 `_safe_path` 的思路（见 `tools/files.py`），并注意 `_PROTECTED = {".env","main.py","agent.py","pyproject.toml","requirements.txt"}` 是**受保护文件名**（比较的是 `basename`）。 |
+| 7 | **路径安全**：写文件类工具请走 `core.runtime.resolve_write()`（越界 ⇒ 结构化拒绝，见 §4.22），并注意 `_PROTECTED = {".env","main.py","agent.py","pyproject.toml","requirements.txt"}` 是**受保护文件名**（比较的是 `basename`）。 |
 | 8 | **必须声明 `profiles`**（`@register(..., profiles=("coding",))`）。工具按 profile 过滤后下发，未声明则默认 `("any",)` = 两个 profile 都暴露。**种子工具**（通用 agent 用）请标 `("general",)`，这样编码流程不会看到它，也就不存在"选错工具"。 |
 | 9 | **同步更新 `docs/MODULES.md` 的工具清单表**。 |
 
@@ -787,6 +881,8 @@ python tests/unit/test_manifest.py            # 单个（也可直接执行）
 | 9 | 正向链路通 | `POST /encode` 跑单函数任务 | `phase=record`、`commit` 非空 |
 | 10 | **反向门禁仍生效** | `python tests/diagnostics/gate_check.py` | `phase=failed`、`rolled_back=true` |
 | 11 | 能力未退化 | `python tests/bench/run_levels.py` | 通过级别数 ≥ 基线 |
+| 12 | **工具调用规范未退化** | `python tests/diagnostics/probe_tool_contract.py`（含反空洞：去掉一个封闭声明必须立刻变红） | 全部 PASS；18/18 工具 `additionalProperties:false` |
+| 13 | **工具产出检验**接在工具上（不是"建好了没人用"） | `python tests/unit/test_tool_envelope.py` | 全部 PASS；`audit().envelope_tools` **非空**，且摘掉登记立刻变红 |
 
 > **第 2、3 项是文档漂移的防线**。改了代码或 CHANGELOG 后，
 > 若忘了同步上游文档，这两项会失败——不必靠人回忆。
@@ -865,3 +961,198 @@ python tests/unit/test_manifest.py            # 单个（也可直接执行）
 **建议做法**：往 workspace 里放手动文件前，确认它已被忽略，或放进 `_tmp/`。
 例如在 `workspace/.gitignore` 里加一行你自己的目录名。
 
+### 9.2 ★ 已知的**判窄**处：`.py` 交付物只做存在性检查会被拒
+
+**这是有意的取舍，不是 bug**（`TRANSPARENCY-BACKEND` B3，见 §4.12）。
+
+| 情形 | 行为 |
+|---|---|
+| 交付物里有 `.py`，判据只写 `assert os.path.exists('mod.py')` | **被拒**（"引用了却没调用"） |
+| 交付物里有 `.py`，判据 `import mod; mod.f()` | 通过 |
+| 交付物**只有数据文件**（`report.txt` / `out.json`） | 不受影响（仍按"引用"判） |
+| 调用方自己给 `verify_command` | **完全不受下限约束**（标准由调用方定） |
+
+**为什么明知会判窄还要这么做**：实测那次假 `passed` 的判据
+（`assert generate_obstacles`）恰好就是"引用了、但从不调用"这一类 ——
+它在旧规则下**完全合格**，而它是恒真的。**判窄的代价是显式失败 + 给出改法**；
+判宽的代价是**假的成功结论**。两者不对称。
+
+**如果你确实需要"只检查文件存在"**：由调用方给 `verify_command`；
+或者把目标改成产出一个数据文件（例如让代码把结果写成 `result.txt`，再断言它的内容）。
+
+### 4.15 结局是 bstain / invalid —— 别把它当成失败
+
+TRANSPARENCY2-BACKEND P1 把结局从两值扩到**四值**（cycle_end.outcome 与
+CycleReport.outcome）：
+
+| 结局 | 含义 | 你要做什么 |
+|---|---|---|
+| pass | 达成，且判据为证 | 看 erdict.criterion_trust：model-self-authored 是**模型自拟判据**，可信度低于 caller-authoritative |
+| ail | **试过了，没达成** | 正常失败：看 error 与 erify.detail |
+| bstain | **说不出什么叫对 / 模型声明做不到** | 补一条判据（调用方给 erify_command），或让它产出一个文件 —— 这不是模型不行 |
+| invalid | **判据或环境自身坏了 —— 这次读数无效** | 修判据/装依赖。**不要**把它记进能力画像 |
+
+**怎么区分**：看 CycleReport.outcome_kind（原因种类，共 13 种，见 core/outcome.py）。
+invalid 的三种：criterion-broken（判据语法错/引用了不存在的符号）、
+environment-missing（缺依赖）、wiring（有命令却没执行）。
+
+### 4.16 check 红了但**不是**代码格式问题 —— 看 
+euse_checks
+
+TRANSPARENCY2-BACKEND P2：机械复用性检查**已接入 check 阶段且有否决权**。
+三类**必然崩**的写法会直接判红（
+eport.reuse_checks.blocking）：
+调用了不存在的符号、用了没导入的名字（F821）、**按旧签名传参**。
+
+`
+[阻塞] undefined-symbol: a.py 引用了不存在的符号 .missing_fn ——  里只有 ['other']
+[阻塞] symbol-arity-mismatch: 用 1 个位置参数调用 mod.f，但它的签名是 (a, b)
+`
+
+**注意分级**：warnings 里的（重复符号、导入了没用、命名不一致）**不拦路** ——
+理由见 docs/EVALUATION-TRANSPARENCY2-BACKEND.md §7（把噪音做成阻塞会让门禁失去意义）。
+
+### 4.17 拆解合规审查（decompose_review）—— 三个字段要一起看
+
+| 字段 | 含义 |
+|---|---|
+| passed | **只代表机械条款**通过（P1/P2/P3/P4/P7/P8） |
+| undecidable | 非空 → 覆盖不全（P5/P6 是机械近似，明说判不了） |
+| independent | **alse = 独立审查模型未启用**（REVIEW 未配置）；**不得**当成审查通过 |
+
+模式由 DECOMPOSE_GATE 控制：off / warn（默认，留痕不拦）/ lock（否决）。
+真实模型现阶段的分解**几乎必然违反** P3/P6 —— 所以默认不拦，但**每次都算、都进事件**。
+
+### 4.18 结局是 `invalid` 且 `outcome_kind=artifact-mismatch`
+
+**症状**：`report.verify.artifact_mismatch` 非空，例如
+
+```
+['mod.py: 验证时 3f1c9a2b7d41 → 交付时 9ab2e5c07f13']
+```
+
+**这是什么**（`TRANSPARENCY3-BACKEND` P6）：**被验证的产物 ≠ 被交付的产物** ——
+判词不描述产物，所以这次读数**无效**（`invalid`），不是模型失败。此时**不会打检查点**
+（`commit` 为空），也不该把它记进能力画像。
+
+**怎么查**：
+
+```bash
+python -c "from storage.store import default_storage;[print(e.payload.get('command'), e.payload.get('artifact_hashes'), e.payload.get('cwd')) for e in default_storage().get_events() if e.kind=='verify']"
+```
+
+**根因提示**：`__pycache__` 陈旧（`.pyc` 的失效判据是源码的 `(mtime, size)`，
+而回退用 `copy2` 会保留 mtime）。上游现在**验前清缓存** + `-B`，所以正常不该再出现；
+若仍出现，说明产物在**验证之后**真的被改动过（例如判据自己写了文件）。
+
+### 4.19 报「`symbol-unindexed`」（索引缺口，不是交付缺口）
+
+**症状**：`manifest.violations` 里有一条 `severity=warning, kind=symbol-unindexed`，
+文案是「…里有这些模块级绑定，但**索引里没有**」。
+
+**这是什么**（P7）：**上游的索引又漏收了一类节点**。它**不拦路**（warning），
+但应当**报 bug** —— 因为这类缺口一旦存在，"缺少符号"的判定就会**假失败**
+（实测 `app = Flask(__name__)` 被判缺符号，直接毁掉了一个能力轴的读数）。
+`raw_module_bindings()` 是那条独立的第二意见，用来把"真没有"与"我没索引到"分开。
+### 4.20 报 `undefined-symbol` / `undefined-name` 时的**作用域**判读
+
+`REUSE-SYMBOL-SCOPE`（P7b）之后，这两类阻塞的含义**更窄也更准**：
+
+| 判词 | 含义 | 该怎么办 |
+|---|---|---|
+| `引用了不存在的符号 `t1.bar`（`t1` 里只有 ['foo']）` | **导入进来的本地模块**里确实没有这个符号 | 真的错，改代码 |
+| `从 `mylib` 导入了不存在的符号 `f`` | 同上（from-import 形式） | 真的错 |
+| `用了未定义的 `np`（没有 import，也没有任何绑定）` | 根名压根不存在 ⇒ 必然 `NameError` | 真的错（补 import） |
+| `用 N 个位置参数调用 `mod.f`，但签名是 …` | 按旧签名传参 ⇒ 必然 `TypeError`（U2 签名重构） | 真的错 |
+
+**不再出现的误判**：`app = Flask(__name__)` + `@app.route(...)`（变量名撞同名模块 `app.py`）、
+`self.db.execute()`（外部库实例的方法）、`obj.attr`（参数对象）、`with … as fh` 等 ——
+这些是**对象属性**，本地 AST 索引天然不可知，**一律不报**。
+判据：**同一份代码换了工作区，结论必须一致**（不一致就是这一类缺陷回来了）。
+
+### 4.21 工具产出是**结果信封** `{ok, kind, data, error}` 时怎么读
+
+**症状**：模型日志里某个工具的产出长这样（不再是旧的扁平形状）：
+
+```json
+{"tool": "check_and_run", "ok": true, "kind": "verification",
+ "data": {"ok": true, "syntax_passed": true, "run_ok": true, "output": "2"}}
+```
+
+**这是什么**（`P9` 追加验收 ③：**工具生成的东西也要做检验**）：
+`ENVELOPE_TOOLS` 里登记的工具体在 `Worker._invoke` 里**套信封**，
+`validate_result()` 校验信封本体，不合规就 `reject` 并回灌
+`tool-result-invalid`（不会让模型当成功读）。
+
+**读法**：真正的内容在 **`data`** 里（`data.output` / `data.parsed_error` /
+`data.run_ok` …）；失败时 `ok=false`、`kind="error"`，顶层 `error` 是
+`{code, message, category?}`，而 `data` 里仍保留工具算出的细节
+（frames / exit_code）—— 信封是**分类**，不是把事实丢掉。
+
+**哪些工具已登记**：`/profile.contract.tool_call_contract.result_envelope`
+（含 `envelope_tools` 与分阶段说明 `staged`）。**未登记的工具产出原样返回**，
+旧读法（`is_error_result`、`pipeline.run_check`）完全不受影响。
+
+**出问题先跑**：`python tests/unit/test_tool_envelope.py`（登记面非空 +
+摘掉登记立刻变红）、`python tests/diagnostics/probe_tool_contract.py`（机械输出）。
+
+### 4.22 三个根 / 目标项目根 / 交付物对账（P14 + P15）
+
+**先看 `/profile.runtime`**（`GET /profile` 的 `runtime` 段）。它给出三个**绝对路径**：
+
+| 键 | 含义 | 覆盖方式 |
+|---|---|---|
+| `runtime_root` | 运行数据（会话 / 存储快照） | `AGENT_RUNTIME_ROOT` |
+| `workspace_root` | **草稿区**（可以乱，不承担交付） | `AGENT_WORKSPACE_DIR` |
+| `output_root` | **交付物**落这里才可核对 | `AGENT_OUTPUT_DIR` |
+
+`project_root` 是**任务级目标项目根**（目标代码库）：`POST /encode` / `POST /run`
+的 `project_root` 字段**每次任务给一个**，只在该请求期间生效（退出即还原）。
+它**不是** `AGENT_BACKEND_DIR`（那是**被测程序自己的源码**，来源核对用）——
+`runtime.project_root.distinct_from_backend_dir` 就是这个判据的机读字段。
+
+**六个工具以目标根为根**：`read_file` / `write_file` / `list_workspace` /
+`get_architecture` / `get_module` / `find_symbol`；`outputs/` 前缀指向输出根。
+**越界即拒**：返回
+
+```json
+{"ok": false, "kind": "error",
+ "error": {"code": "out-of-scope-write", "message": "…",
+           "path": "…", "allowed_roots": ["<目标根>", "<输出根>"], "hint": "…"}}
+```
+
+**交付物**：`/encode` 请求的 `deliverables`（`["out.txt"]` 或
+`{path, sha256?, size?}`）声明产出；**声明了就必须存在且哈希一致**，否则结局
+`delivery-gap`（`fail`），`report.deliverables.violations` 给出结构化原因。
+没声明也照样回报**实际产物** `{path, sha256, size}`（用户要的「知道做了什么」）。
+
+**出问题先跑**：`python tests/diagnostics/probe_output_and_map.py`
+（三个根 / 换根生效 / 越界拒绝 / 交付物对账 / 覆盖率账目，五段机械输出）。
+
+**已知边界**（如实说明）：检查点/回退仍锚在**工作区根**（三方隔离：不去 reset
+别人的仓库）；设了目标根时 `__pycache__` 也只清工作区根（`cache_warning` 会写明）。
+
+### 4.23 这个 pass 靠什么（P17：`pass_evidence`）
+
+**为什么看它**：换模型时，如果 `pass` 不区分证据，**更爱自我宣称的模型会拿到更高的分**
+—— 那测的是它愿不愿意说话，不是它能不能做，**读数不可比**。
+
+**先看 `/profile.pass_evidence`**（契约面）与 `CycleReport.evidence` /
+`/encode` 响应的 `evidence` / `cycle_end` 事件的 `checked_by` + `evidence_kind`：
+
+| `evidence_kind` | 结构 | `checked_by` | 含义 |
+|---|---|---|---|
+| `executed` | `{command, exit_code, expect_exit?}` | `tool` | 判据**真的被执行**，退出码已记录 |
+| `artifacts` | `[{path, sha256, size}]` | `tool` | 交付物在**输出根内**且哈希可核 |
+| `static_declared` | `{reason}` | `model` | 静态交付物；理由由 `/encode` 的 `static_reason` 给，**空串不成立** |
+
+**硬规则**：`checked_by == "model"` 且 `evidence_kind` 为空 ⇒ **不得记 pass**
+（`outcome=invalid`、`outcome_kind=unsubstantiated-pass`，**不落检查点**）。
+`verify` 事件与 `verify_passed` 旁边现在还能读到 `exit_code` ——
+`passed=true` 而 `exit_code` 为空，说明**执行事实缺失**，不是"通过"。
+
+工作区里的产物**不算**交付证据，但会逐条出现在 `evidence.excluded_artifacts`
+（`out-of-output-root` / `missing-hash`）—— 「没算证据」与「没看见」不是一回事。
+
+**出问题先跑**：`python tests/unit/test_pass_evidence.py`、
+`python tests/diagnostics/probe_pass_evidence.py`（含"抽掉执行记录 ⇒ pass 被拒"）。

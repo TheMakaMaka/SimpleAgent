@@ -1,0 +1,19 @@
+# 后端依赖。
+#
+# 实测环境：Python 3.10.11（见 README「环境」一节）。
+# 仓库自带 .venv/，也可用这份清单重建：
+#
+#   python -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+#
+# 版本号是实测可用的值，不是下限。.venv 里另有大量无关重型包，不必照搬。
+
+openai==2.44.0
+fastapi==0.115.12
+uvicorn==0.34.3
+httpx==0.28.1
+pydantic==2.11.5
+
+# 可选：装了 `main.py` 才会自动加载仓库根的 .env；
+# 不装则静默降级为「只用环境变量」（见 README「配置」一节）。
+python-dotenv

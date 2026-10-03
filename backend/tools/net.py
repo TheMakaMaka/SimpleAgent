@@ -54,6 +54,7 @@ def _check_url(url: str) -> None:
             "url": {"type": "string", "description": "完整的 http/https 网址"}
         },
         "required": ["url"],
+        "additionalProperties": False,
     },
     profiles=("general",),
 )

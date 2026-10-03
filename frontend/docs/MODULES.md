@@ -1,6 +1,6 @@
 # 模块与接口参考
 
-> **同步至 CHANGELOG §31** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §36** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 所有签名均从代码实际读出。标 `**(未使用)**` 或 `(预留)` 的表示
 > 定义了但没有消费方——详见 §19 当前不一致清单。
@@ -1002,6 +1002,81 @@ emit_progress(kind: str, **payload) -> None
 两条纪律：每个包装都走 `_safe()` 兜异常（**进度是旁路，坏掉不能拖垮 cycle**）；
 检测到上游自带埋点（`_enter`）就跳过 cycle 级挂钩，避免重复播报。
 
+#### ★ 包装器一律**透传**，不许镜像签名（P5 的教训）
+
+上游给一个挂钩点**加一个可选参数**（加性、向后兼容），
+镜像签名的包装器就会当场炸：
+
+```
+TypeError: install.<locals>._run_verify() takes 2 positional arguments but 3 were given
+```
+
+实测：上游 v1.23 给 `run_verify` 加了 `files=None`（`core/pipeline.py:361`）
+并在 `core/orchestrator.py:246` 用两个位置参数调用它，而我们那份包装器
+`async def _run_verify(self, command)` **每次运行 ~6 秒内必炸，验证整条链停摆**。
+
+所以现在**不再逐个手写包装器**：
+
+```python
+HOOK_POINTS = ((模块:类, 属性名, 说明, 是否 staticmethod), ...)   # ★ 唯一名单（11 个）
+
+def bind_arguments(orig, args, kwargs) -> dict   # 按上游真实签名解出参数名（VAR_KEYWORD 展开）
+def make_sync_hook(orig, around, *, label)       # around(named, call)
+def make_async_hook(orig, around, *, label)      # async around(named, call) → await call()
+def make_hook(orig, around, *, label)            # 同步/异步用 iscoroutinefunction **问上游**
+```
+
+四条纪律（每条都来自一次真实事故）：
+
+1. **不镜像签名**：包装器就是 `(*args, **kwargs)`，原样 `orig(*args, **kwargs)`；
+2. **同步/异步问上游**（`inspect.iscoroutinefunction`）—— 手写这个判断就是又一份镜像；
+3. **刻意不用 `functools.wraps`**：它把 `__wrapped__` 指回原方法，于是
+   `inspect.signature(包装器)` 会**报告上游签名**（看着像镜像），而实际能力是"什么都收"。
+   外部工具按签名判断兼容性时**必须看到真相**；工厂只手工复制
+   `__name__/__qualname__/__doc__`，并留 `__bridge_hook__`（工厂印记）与
+   `__wrapped_orig__`（原方法）；
+4. `install()` **按名单遍历**：手写十处 = 十份会漂的镜像。
+
+**P5b 追加的两条纪律**（同一类毛病第二次犯，所以写进纪律而不是注释）：
+
+5. **挂钩体不许引用"只在函数内 import 过"的名字**：`install()` 里的
+   `from core.worker import Worker` 是**局部**，而 `_around_invoke` 查的是**模块全局** ——
+   ⇒ `NameError: name 'Worker' is not defined`，**模型第一次调用工具时就死**。
+   现在走 `worker_cls()` **延迟取类**，并且那次解析也纳入 `_safe`。
+   ★ ruff **早就报了** `F821`，被我自己的 `# noqa` 压掉 ——
+   **一句 noqa 能让门禁闭嘴，但改不了运行期的事实。**
+6. **"把缺口写进局限里"不等于评估过它**：P5 那版 harness 把 worker 换成桩，
+   于是 `Worker.run`/`_invoke`/`LLMClient.chat` 三个挂钩点被绕过 ——
+   我把这件事打印成"已声明的局限"，而**那颗雷就在里面**。
+   现在 harness **不绕过任何挂钩点**（只伪造最底层 `LLMClient._client`），
+   并**逐点断言各自的事件真的出现**。
+
+**P6 追加的纪律：`_safe` 必须**真的**兜住，而且"求值"也在保护范围内**
+
+7. **`_safe` 只放行 `RunCancelled`**。改前写的是
+   `except BaseException: raise` + `except Exception: return None` ——
+   第一条把**所有**异常截走并重抛，第二条**永远走不到**（死代码）：
+   **一个异常都没兜住**，而模块抬头明确承诺了"兜住"。
+   实测判据 H：`_safe(lambda: 1/0)` 当时抛 `ZeroDivisionError`。
+   ⇒ 挂钩自身的 bug 会**杀掉用户整轮运行**，而 `status=error` 与"模型做不出来"
+   长得一模一样 ⇒ **污染能力画像**。
+8. **实参是在进 `_safe` 之前求值的** —— `_safe(worker_cls()._parse_args, …)` 里
+   取类那一步在保护之外。所以有两个内部函数：
+   `parse_worker_args()`（取类在内层）与 `emit_safe(kind, build, *args)`
+   （**payload 构造**也在保护内）。5 处"实参里带调用"的 emit 都改成了 `emit_safe`。
+   ★ 取舍：构造失败 ⇒ **那一条事件不发**（可见的代价），cycle 照常往下跑。
+
+**门禁**（`test_hook_compat.py` + `hook_verify_e2e.py`）：
+
+```powershell
+python tests/unit/test_hook_compat.py       # 逐个挂钩点：签名非镜像 + 接得住上游参数（+多加一个）
+                                            # + [6] 挂钩体无未定义全局（dis 扫 + ruff F821 --ignore-noqa）
+                                            # + [7] 装上挂钩后真的调一次 Worker._invoke；全部含负向
+python scripts\doctor.py                    # 体检里也看挂钩点
+$env:AGENT_BACKEND_DIR="…\SimpleAgent2_Cycle"
+python tests\diagnostics\hook_verify_e2e.py # ★ 真跑一次流程并**走到 verify**（离线，worker 换桩）
+```
+
 `CodingCycle.run(goal, verify_command=None)` 是**上游原样的签名**。
 前端按 `run_id` 订阅；事件里同时带着上游生成的 `cycle_id`，两者不同名，按需关联。
 
@@ -1514,3 +1589,315 @@ $PY tests/unit/test_staleness.py     # 34 项（含负向：指向坏上游必�
 $PY tests/unit/test_bundled_gate.py  # 31 项（含**子进程负向测试**：拒绝真的发生）
 python scripts/doctor.py             # 「路径与隔离」节含该结论
 ```
+
+---
+
+## 26. `frontend/src/store/transparency.ts` — 四块「为什么」视图的采集器
+
+**它回答的问题不是"到哪一步了"，而是"为什么"。** 起因见 `docs/CHANGELOG.md` 的「TRANSPARENCY-UI：把『为什么』显示出来」一节：
+一次 `status=passed` 的运行，判据在失败之后被换成了一张必过的考卷，而界面看不见。
+
+### 26.1 为什么单独一个模块，而不是往 `run.ts` 的 `switch` 里加 `case`
+
+`run.ts` 的 `case` 列表被 `tests/unit/test_event_contract.py` 当作
+**「前端认的事件词表」**审查：两个方向都查 ——
+`[2]` 后端发的必须被认下、`[3]` 前端认了而当前后端不发 = **死代码**。
+
+上游 `TRANSPARENCY-BACKEND` 新增的三个事件（`orchestrator_round` /
+`verify_criterion` / `self_report`，`D:\PythonProject\SimpleAgent2_Cycle\core\contract.py:172/181/189`，
+标的是 `since="1.2"`）**还不在契约主本 v1.0.24 里**，于是：
+
+| 做法 | 自带旧副本配置 | 指向真上游 |
+|---|---|---|
+| 写 `case` | `[3]` 红（判成死代码，**而且它判得对**） | 绿 |
+| 不写 `case` | 绿 | `[2]` 红（后端发的没被认下） |
+
+**为了让自己的代码变绿而放宽门禁，是最坏的一种修法。** 所以本轮的解法是
+让采集器**自己声明词表**：
+
+```ts
+export const RECOGNIZED_KINDS = ['orchestrator_round','verify_criterion','self_report'] as const
+type RecognizedKind = (typeof RECOGNIZED_KINDS)[number]
+const HANDLERS: Record<RecognizedKind, …> = { orchestrator_round, verify_criterion, self_report }
+```
+
+★ **声明与行为同一处**：`HANDLERS` 的键类型就是 `RecognizedKind`，
+`collectTransparency` 用 `HANDLERS[kind as RecognizedKind]` 分派 ——
+声明不是注释式的，删掉它就编不过。`test_event_contract.py` 因此把
+"前端认得的词"判为 `case ∪ 声明`：**测量口径换了，但两个方向一条都没松**。
+
+对"自带旧副本"那种配置，三个名字另有一条**有到期条件的豁免**：
+逐名去**参考上游的 `D:\PythonProject\SimpleAgent2_Cycle\core\contract.py`** 核实 `EventSpec` 真的存在
+（核不到就 FAIL），并在契约同步后删除。
+`test_transparency_ui.py` 第 `[4]` 组把这个决定**钉住**。
+
+### 26.2 接口
+
+```ts
+collectTransparency(state, ev, now) -> ClaimedTimeline | null
+// 返回非空 = 这条事件由本模块渲染时间线（调用方跳过 switch，避免同一件事渲染两次）
+// 返回 null = 只采集状态，渲染照旧走 switch
+
+export const RECOGNIZED_KINDS = [...] as const   // 声明的词表（见 26.1）
+
+// 采集出来的视图（定义在 frontend/src/types.ts）
+DecisionRoundView    // A2：round / status / reasoning / finalAnswer / taskCount
+                     //     / intentSource(field|tasks|none) / intent / planned[]
+DecisionPlannedTask  //     每条带 source：declared（后端声明）| dispatched（真的派了）
+ModelTurnView        // A3：taskId / step / content / contentLen / calls[]
+CriterionView        // B4：seq / action(executed|rejected|adopted|unknown)
+                     //     / outcome(passed|failed|rejected|unknown) / adopted
+                     //     / command / detail / reason / source / attempt
+                     //     / afterFailure（按 seq 相邻**推断**）
+                     //     / previousCommand + previousPassed（后端**显式**给的）
+SelfReportView       // C3：ok / error / phase / done / notDone / why / reflections
+                     //     / approach / confidenceLevel + confidenceBasis / openQuestions
+FactCheckView        // C3：checked / contradictions[] / unmentioned[]
+                     //     / notes[] / missingFields[] / facts{}
+FactCheckRow         //     kind / claim / fact / severity
+OutcomeView          // D3：value(pass|fail|abstain|invalid|unknown) / raw
+                     //     / source(caller|model) / reason / legacyVocabulary
+```
+
+### 26.3 三条纪律（都是**验收**逼出来的，不是审美）
+
+| # | 纪律 | 落到代码上 |
+|---|---|---|
+| 1 | **只显示事件流里真实存在的东西** | 后端没给的字段显示「后端未提供」（`intentSource === 'none'`），或用实测替代物并标明（`planned[].source === 'dispatched'`）。**不编** |
+| 2 | **推断必须标成推断** | `afterFailure` 只陈述"序号相邻的上一条是执行且失败的"，界面写「按事件序号相邻推断」；后端的 `previous_command`/`previous_passed` 另起一行写「后端显式」。两种来源**不同形** |
+| 3 | **缺席也要有归因** | `selfReportAbsentReason`：没有自述时点明"该运行的结局词是旧词表 `passed`，后端 C1 交付前这类事件不会产生"，而不是留一个空面板 |
+
+**另外四条容易漏的**：
+
+- **`afterFailure` 只在同一次尝试内陈述**（`last.attempt === attempt`）。
+  跨 attempt 的"上一条失败"属于**已被整体回退**的那一轮，
+  把它当成"这次换上的前因"就是在编因果。
+- **`fact_check` 按**实现里真实的形状**读**（`D:\PythonProject\SimpleAgent2_Cycle\core\self_report.py:88-224`）：  `contradictions` 里每一条**本身就是矛盾**，没有 `ok` 字段。
+  早期版本按"逐行对照 + `ok` 判定"读，会把**真矛盾**读成"认不出判定值" ——
+  最该看见的东西反而看不见。
+- **`confidence` 是对象** `{level, basis}`，不是字符串；
+  当成字符串读会渲染出 `[object Object]`。
+- **幂等**：`state.transparencySeq` 是序号高水位。重放/重连可能把同一 seq 再喂一次，
+  而判据演化与"上一条失败了"是**顺序敏感**的读数 —— 重入一次就会说错话。
+
+### 26.4 `frontend/src/store/args.ts`（本轮从 `run.ts` 拆出）
+
+工具参数的可读摘要，`run.ts`（时间线/工具面板）与 `transparency.ts`（A3）**共用一份**；
+复制两份就会出现"同一个工具调用在两张面板上写法不同"。
+
+★ 它同时修掉一个**界面对不上机械事实**的实例：
+`bridge/hooks.py:74` 把超过 200 字符的参数换成「前 6 行 + `…（共 275 字符）`」，
+而旧实现对**预览串**取 `.length` → 界面显示"写入 …（**235** 字符）"。
+真值 275 就写在同一个字符串里。现在优先读事件声明的真值（`contentLength`）。
+
+### 26.5 `frontend/scripts/replay-check.mjs` + C3 夹具
+
+四段，都用**生产代码本身**：
+
+| 段 | 做什么 |
+|---|---|
+| `[B4][A2][A3][C3][D3]` | 固定样例 `run_20260927_125647_5a3297` 的 77 条事件 → **真实归约器**（esbuild 就地打包，不复制逻辑）→ 读数断言 |
+| `[E]` | 按**契约字段**造的合成事件（`orchestrator_round`/`verify_criterion`）→ 新事件的读取 |
+| `[F]` | `tests/fixtures/transparency-fixture.json` → C3 自述 + 矛盾 |
+| `[R]` | **同一份 vite 配置**做 SSR 构建 + `vue/server-renderer` → 断言那几行字**真在 HTML 里** |
+
+★ `[F]` 的 `fact_check` **不是手写的**：由
+`tests/diagnostics/make_transparency_fixture.py` 调**上游自己的**
+`core/self_report.fact_check()` 产出（机械事实取自固定样例的 `meta.json`，
+只有自述文本是明写的夹具）。否则"矛盾能不能被检出来"就成了我自己说了算 ——
+那正是 C2 要防的"第二个自嗨通道"。
+
+### 26.6 验证
+
+```powershell
+npm run check:transparency                      # 固定样例 → 真实归约器 → 新事件 → 夹具 → 真渲染，66/66
+python tests/unit/test_transparency_ui.py       # 50 项（含编码门禁与夹具来源核对；缺 node 时 SKIP）
+$env:AGENT_UPSTREAM_DIR="…\SimpleAgent2_Cycle"; python tests/diagnostics/make_transparency_fixture.py   # 6/6
+```
+
+---
+
+## 27. `bridge/partition.py` 的 `CONTRACT_LAG_KINDS` —— 契约滞后的**方向判定**
+
+> 接在 §24（`bridge/contract_vocab.py` + `bridge/partition.py`）后面：
+> §24 讲"分区与推导"，这一节讲**推导与契约不一致时该判谁**。
+
+### 27.1 两个方向必须分开
+
+`check_against_contract()` 的判据是「实测 == 契约声明」。但"不一致"有两个方向，
+含义完全不同：
+
+| 现象 | 含义 | 判定 |
+|---|---|---|
+| 契约有、实测**没有**（`missing`） | 上游**删了**它承诺过的东西 | **真回归** → 进 `issues` |
+| 实测有、契约**没有**（`extra`） | 上游**加性**新增，契约主本该跟上来 | **契约滞后** → 登记后放行 |
+
+只判第一个方向，第二种会让门禁**永远红着**，而"永远红着"的检查等于没有检查
+（同一条纪律见 `doctor.py` 的 bundled→WARN、`test_two_entrypoints.py` 的 SKIP）。
+
+### 27.2 但"凡是多出来的都放过"同样不行
+
+那会把"**后端偷偷发明了一个事件**"也放过去。所以滞后只对
+`CONTRACT_LAG_KINDS` 里**逐个列名**的 kind 生效：
+
+```python
+CONTRACT_LAG_KINDS = frozenset({"orchestrator_round", "verify_criterion", "self_report"})
+
+extra      = derived - recorded
+lagging    = extra & CONTRACT_LAG_KINDS     # 放行（并记进 contract_lag）
+unexpected = extra - CONTRACT_LAG_KINDS     # 照旧 FAIL
+missing                                     # 照旧 FAIL
+# 总数期望值 = 契约快照 + len(lagging)
+```
+
+`/api/spec` 的 `diagnostics` 会带 `contract_lag` 与 `contract_lag_note` ——
+**必须显示出来**，否则"实测与契约不一致"没人看得见。
+
+### 27.3 负向仍然会红（这是它不算"放宽"的证据）
+
+`test_partition.py` 里有现成的负向断言，实测输出：
+
+```
+PASS ★ 事件分区错了自检会红   ["上游事件集合与契约快照不一致：多 ['invented_event'] 少 []"
+                              "（另有已登记滞后 ['orchestrator_round', 'self_report', 'verify_criterion']）",
+                              '事件总数 38 != 契约快照 34 + 已登记滞后 3', …]
+```
+
+`invented_event`（一个没登记的名字）照样把 `check_against_contract()` 判红。
+
+### 27.4 到期条件
+
+契约主本声明这三个事件（或上游改回需求里建议的名字）之后，
+`CONTRACT_LAG_KINDS` 应当清空 —— 那时 `[2]`/`[3]` 两条门禁与
+`test_partition` 的期望值都会自然回到"实测 == 契约"。
+`test_event_contract.py` 与 `test_transparency_ui.py` 里各有一条盯着这件事的注释与断言。
+
+> **★ 第一批已经到期并已删除（2026-09-27）**：契约 **v1.0.25** 声明了
+> `orchestrator_round` / `verify_criterion` / `self_report`（13 → 16，分区 34 → 37），
+> 所以那三个名字从表里删掉、并加进了离线回退表
+> （`CONTRACT_FALLBACK_UPSTREAM_EVENTS` 与 `TOTAL_EVENTS = 37`）。
+> **现在表里是第二批**：`reuse`（`core/contract.py:200`，已在 `core/coding_cycle.py:507` 发出）
+> 与 `decompose_review`（`core/contract.py:207`，**已声明、尚未发出**）。
+> 这就是本表的**用法**：契约一同步就换/删，不是长在代码里的白名单。
+
+---
+
+## 28. `frontend/src/store/tasklist.ts` + `TaskPanel.vue` —— 任务面板的四条硬规矩
+
+**起因（用户原话）**：
+
+> 「右上角的每一个任务状态，这个设计不错，但是**太多了就会压缩，也不会自动滚动**，
+> 完全失去可视化价值。」
+
+实测那两次运行按 `task_start` 数是 **14 与 19** 个任务
+（其中 `run_20260927_225939_f4daaa` 里 `t9` 出现了**两次**）。
+
+### 28.1 一个机制同时解释了两句话
+
+```
+.tasks__body { overflow-y: auto; display: flex; flex-direction: column; min-height: 0 }
+.task        { ... }                        ← 没有 flex-shrink: 0
+App.vue      .panel { max-height: 44vh }    ← 有界高度
+```
+
+在**有界高度的 flex 列**里，子项默认 `flex-shrink: 1` ——
+它们**先被压缩、永远不溢出**，于是 `overflow-y: auto` **永远不生效**：
+
+- "太多了就会**压缩**" ← 子项在缩；
+- "也**不会自动滚动**" ← 没溢出 ⇒ 滚动条不出现。
+
+修法只有一句 `.task { flex: 0 0 auto }`，但另外三条也要真做到：
+
+| # | 要求 | 落点 |
+|---|---|---|
+| 1 | 不压缩 | `.task { flex: 0 0 auto }` + `min-height: 46px` |
+| 2 | 可滚动 | `.tasks { max-height: 44vh }` + `.tasks__body { overflow-y: auto }` |
+| 3 | 当前项自动在视野内（**手动滚过则不抢**） | `FollowMode` + `shouldAutoFollow()` |
+| 4 | 量大时降级可读 | `taskRows()` 折叠已完成，**当前项与失败项永远可见** |
+
+### 28.2 纯逻辑（可机械断言的那部分）
+
+```ts
+COLLAPSE_AT = 6
+taskRows(tasks, {expanded, collapseAt, keepIndex}) -> TaskRow[]
+//   TaskRow = {kind:'task', key, task} | {kind:'group', key, count, expanded}
+visibleKeys(rows) / hiddenTasks(tasks, rows)
+shouldAutoFollow(mode) -> boolean
+modeAfterScroll(mode, cause: 'user'|'program', nearCurrent) -> FollowMode
+taskKey(index, task) -> string
+```
+
+**三个刻意的设计**（都被实测/断言逼出来）：
+
+1. **key 必须带下标**：任务 id 会在同一轮里复用（实测 `t9` 两次）。
+   只用 id 做 `:key`，Vue 在 patch 时会复用错节点 —— 而这类错**只在运行时报 warning**，
+   构建与类型检查都看不出来。
+2. **`keepIndex` 让"当前项"不被折叠**：一次运行跑完之后当前项状态也是 `done`，
+   按状态分它就该进折叠区 —— 而那正是人回头看的时候。
+   所以按**下标**把它钉住（`taskRows` 的 `isKeep`）。
+3. **`modeAfterScroll(mode,'program',…)` 直接返回原模式**：
+   `scrollTo({behavior:'smooth'})` 会连续触发**多个** `scroll` 事件，
+   用一次性标志的话第一个事件就把它清掉，后面几个会被当成**用户**滚动 ——
+   于是"自动跟随"会在第一次自动滚动之后**把自己关掉**。
+
+### 28.3 验证
+
+```powershell
+cd frontend; node scripts/replay-check.mjs        # [P2] 段：状态级 + 渲染级 + 样式契约
+```
+
+实测（19 个任务那次运行）：折叠 18 项、当前项与失败项都在可见集合、
+展开 19/19 不丢、key 唯一；渲染出的 HTML 里有「已完成 18 项」与当前项描述。
+
+**验不到的那一层**（必须说清）：**滚轮真的能滚、平滑滚动真的发生**、
+以及"手动滚过就不抢"在**真浏览器**里的时序 —— 这需要浏览器自动化，本仓库没有。
+
+---
+
+## 29. 交付新鲜度：`scripts/freshness.py`
+
+**起因**：统筹方用 `deploy-freshness.py` 抓到一次真事故 ——
+服务的 JS 是 `index-BcJOtip4.js`，而当前源码重新构建是 `index-BazGZyJn.js`。
+**代码改了、dist 没重建**，用户看到的不是交付的那一版。
+
+**根因（两个时间点）**：`gen-expectations.mjs` 在 **13:43:42** 才改好，
+而 `dist/index.html` 是 **13:43:17** 构建的（早 25 秒）；
+之后只跑过 `npm run typecheck`（它**只重新生成**
+`src/generated/expectations.ts`，**从不重建 dist**）。
+
+**判据**（与统筹方同一条，但离线可跑）：**不看 mtime**，
+用当前源码构建到临时目录，再逐文件比 `index.html` **引用**的资源名与内容哈希。
+
+```powershell
+python scripts/freshness.py                # 只检查（非 0 = 陈旧）
+python scripts/freshness.py --fix          # 直接重建 dist
+python scripts/freshness.py --dist <dir>   # 比另一个 dist（负向测试用）
+python tests/unit/test_dist_freshness.py   # 正向 ok + **负向**（改脏必须报）
+```
+
+**三个出口都钉住了**：
+
+| 出口 | 行为 |
+|---|---|
+| 命令行 | `FRESHNESS state = ok/fail` + 每个产物的 `sha256` 前缀 |
+| 单元门禁 | `test_dist_freshness.py`（缺 node 时 SKIP）：正向 + **负向**（同名不同内容） |
+| 备份 preflight | `backup.ps1` 加"交付新鲜度"一项 —— **根因就在那个函数里**，dist 陈旧就不让备份通过 |
+
+★ **负向测试是关键**：它证明这条门禁不是"永远绿"，而且模拟的正是真实发生过的形态
+（**同名、内容不同**），比"少一个文件"更难发现。
+
+---
+
+## 30. `scripts/fix_bom.py` —— 改完 `.ps1` 补 BOM
+
+PowerShell 5.1 读 `.ps1` 时，**没有 BOM 就按 ANSI（本机 GBK）解**：
+中文注释变乱码，其中一句只要含引号/反斜杠，脚本就**直接语法错误**。
+而编辑工具默认写 UTF-8 **无 BOM** —— 所以**每改一次 `.ps1` 就会踩一次**。
+
+```powershell
+python scripts/fix_bom.py            # 检查并补（幂等）
+python scripts/fix_bom.py --check     # 只报不改（非 0 = 有文件缺 BOM）
+python tests/unit/test_ps1_encoding.py
+```
+
+`tests/unit/test_ps1_encoding.py` 本来就会逮住它；这个脚本只是**省掉每次手打恢复命令**。

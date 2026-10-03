@@ -1,5 +1,12 @@
 # 变更评估文档 · `VERIFY-VACUOUS`
 
+> 后续变更（2026-09-27）：`TRANSPARENCY-BACKEND` 的 **B3** 把 `.py` 交付物的下限
+> 从「**引用**」收紧到「**必须调用**」—— 本文 §3.2/§4 里那条
+> `assert os.path.exists('add.py')` 可采的用例因此**被有意改成不可采**。
+> 两层是叠加关系（引用仍然必要），见 `docs/EVALUATION-TRANSPARENCY-BACKEND.md`。
+
+---
+
 - **变更编号**：`VERIFY-VACUOUS`
 - **提出方**：统筹
 - **执行侧**：backend

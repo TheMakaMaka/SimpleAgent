@@ -159,6 +159,7 @@ def _compute_nesting(node: ast.AST, depth: int = 0) -> int:
             "code": {"type": "string", "description": "要审查的完整 Python 代码"}
         },
         "required": ["code"],
+        "additionalProperties": False,
     },
     profiles=("coding",),
 )

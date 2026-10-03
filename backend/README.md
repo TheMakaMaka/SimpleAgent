@@ -1,6 +1,6 @@
 # SimpleAgent2_Cycle
 
-> **同步至 CHANGELOG §34** —— 本文只描述**当前状态**；修复过程见 `docs/CHANGELOG.md`。
+> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `docs/CHANGELOG.md`。
 
 **一个面向自动编码的标准工作流 —— 模型可替换，不是某个模型的定制产物。**
 
@@ -103,9 +103,9 @@ curl -X POST http://127.0.0.1:8000/encode -H "Content-Type: application/json" -d
 
 | 接口 | 说明 |
 |---|---|
-| `POST /encode` | **主入口**：一轮编码流程，含强制校验与检查点 |
-| `POST /run` | 旧流程：只跑主循环+子循环，无强制校验、无检查点（保留用于对比） |
-| `GET /profile` | 查看生效的模型接入参数与启动自检结果 |
+| `POST /encode` | **主入口**：一轮编码流程，含强制校验与检查点；可带任务级 `project_root` 与 `deliverables` |
+| `POST /run` | 旧流程：只跑主循环+子循环，无强制校验、无检查点（保留用于对比）；可带任务级 `project_root` |
+| `GET /profile` | 查看生效的模型接入参数与启动自检结果；`runtime` 段给出**运行根 / 工作区根 / 输出根**三个绝对路径 |
 | `GET /` | 存活检查 |
 
 ---
@@ -125,6 +125,14 @@ curl -X POST http://127.0.0.1:8000/encode -H "Content-Type: application/json" -d
 | `docs/EVALUATION-ARCH-D7.md` | **变更评估**：D7 传输断点（`bridge_gate_steps` 被静默丢弃）+ `CONTRACT_VERSION` 升 `1.1` + D10/D5 两条新门禁 | 要审"声明了但没接上"这类失效时 |
 | `docs/EVALUATION-FIX-VERIFY-WIRING.md` | **变更评估**：一个 `if` 决定了两个能力是否存在 —— 不带 `verify_command` 的真实目标**从不执行验证** | 要审"验证到底跑没跑"时 |
 | `docs/EVALUATION-VERIFY-VACUOUS.md` | **变更评估**：自拟验收可以**恒真** —— `print('PASS')` 让"没做"也判成功（含"关掉开关必定复现"的反向证明） | 要审"验证到底有没有意义"时 |
+| `docs/EVALUATION-TRANSPARENCY-BACKEND.md` | **变更评估**：**判据不得静默换弱**（换掉已失败的判据必须给理由）+ 自拟判据必须**调用**交付物 + 决策依据/判据演化/收尾自述与**交叉核对** | 要审"那次 `passed` 是怎么来的、还会不会再发生"时 |
+| `docs/EVALUATION-TRANSPARENCY2-BACKEND.md` | **变更评估**：**结局四值**（`pass`/`fail`/`abstain`/`invalid` —— 没有 `invalid` 会把"判据写错"记成"模型不行"）+ 两条**有否决权**的机械关卡（复用性 P2 / 拆解合规 P3）+ 架构事实层 P4 | 要审"这台仪表的读数算不算数"时 |
+| `docs/EVALUATION-TRANSPARENCY3-BACKEND.md` | **变更评估**：**判词必须描述产物**（P6：验前记内容哈希 + 清字节码缓存 + 对不上即 `invalid`）+ 符号表收模块级赋值（P7）+ 审查模式显式（P8） | 要审"这次判读的到底是不是那份产物"时 |
+| `docs/EVALUATION-REUSE-SYMBOL-SCOPE.md` | **变更评估**：复用层符号反查的**名字撞车**（`app = Flask(...)` 撞 `app.py` ⇒ 正确代码被硬否决、模型还被带着去反思它）—— 修好且**不许靠关检查来修** | 要审"这条 blocking 是真错还是误判"时 |
+| `docs/EVALUATION-TOOLCALL-NORM.md` | **变更评估**（P9）：工具调用**规范化**（18 个工具封闭 + 别名表 + 未知键结构化拒绝）+ 工具产出**检验**（信封 / 旧字符串仍可读）；含反空洞机械输出 | 要审"两次同义调用是不是同一个形状"时 |
+| `docs/EVALUATION-ENVELOPE-WIRING.md` | **变更评估**（P9 追加验收 ③ / D33 后半）：**产出检验真的接到工具上**（`audit().envelope_tools` 非空 + 摘掉登记立刻变红），以及 D30 文档计数漂移的收口 | 要审"机制是接上了还是只建好了"时 |
+| `docs/EVALUATION-OUTPUT-CONTRACT.md` | **变更评估**（P14/P15/P13/P11）：三个绝对根 + **任务级目标项目根** + **交付物对账**；verify 归因看判据来源；结构地图的覆盖率/新鲜度/范围/反向索引 | 要审"东西写哪、交付了什么、这次读数算不算数"时 |
+| `docs/EVALUATION-PASS-EVIDENCE.md` | **变更评估**（P17）：**pass 必须带机械证据**（`checked_by` + `evidence_kind`：`executed`/`artifacts`/`static_declared`）；没有执行记录 ⇒ 不得记 pass | 要审"这个 pass 是靠什么通过的、换模型后读数还可比吗"时 |
 | `能力评估报告.md` | **能力边界实测**：8 级难度阶梯结果、失败根因分类 | 想知道"它现在能干什么" |
 | `docs/CHANGELOG.md` | **修复记录**：已验证的修复 + 可复现验证命令 + 尚未修复清单 | **排查某问题是否已修时先看这里** |
 | `docs/VERSIONS.md` | **备份点记录**：每个版本的 commit、改了什么、验证结果、**精确回退命令** | 要回退到某个已验证状态时 |
@@ -206,7 +214,8 @@ core/                工作流层 + 适配层
   ├─ worker.py         子循环：用工具完成单个任务
   ├─ pipeline.py       门禁：manifest / check / verify 调度
   ├─ manifest.py       交付契约：声明 vs 实际
-  ├─ symbol_index.py   结构事实：AST 扫描符号与依赖
+  ├─ symbol_index.py   结构事实：AST 扫描符号与依赖（+ 覆盖率账目 / 新鲜度 / 反向索引）
+  ├─ runtime.py        三个根（运行/工作区/输出）+ 任务级目标项目根 + 交付物对账
   ├─ checkpoint.py     回退：git / snapshot 双后端
   ├─ memory.py         全局状态 + 验证结论回流
   ├─ model_profile.py  模型接入标准参数入口（适配层）
@@ -216,7 +225,7 @@ tools/               18 个工具，按 profile 过滤下发（registry.py 为�
 storage/             会话与事件落盘（sessions/、storage_data/）
 web/                 手机端审批页（远程人工决策）
 tests/               单测 / 能力基准 / 诊断，见 tests/README.md
-workspace/           模型产出的代码（运行产物）
+workspace/           模型产出的代码（草稿区，运行产物）；交付物的**输出根**是 outputs/
 docs/                架构、模块、运维文档
 ```
 

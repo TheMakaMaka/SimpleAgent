@@ -113,7 +113,7 @@ class EventSpec:
     note: str = ""
 
 
-# ---------- 事件词表（当前 13 种，全部来自 core/coding_cycle.py）----------
+# ---------- 事件词表（当前 18 种，全部来自 core/coding_cycle.py）----------
 EVENTS: dict[str, EventSpec] = {
     "cycle_start": EventSpec(
         "cycle_start", ("backend", "prior_files", "code_dir", "code_fingerprint"),
@@ -139,12 +139,21 @@ EVENTS: dict[str, EventSpec] = {
         "lint", ("issues", "path", "reason", "status"), since="1.0",
         note="status 三态：passed / failed / skipped。"
              "skipped **不等于通过**，前端不要染成绿色"),
+    #: `TRANSPARENCY3-BACKEND` P6：判词必须描述产物 —— 事件里带被验证产物的
+    #: 哈希与工作目录，`artifact_hashes_final` 是交付时的哈希，两者对不上即 invalid。
     "verify": EventSpec(
-        "verify", ("command", "detail", "passed", "source"), since="1.0",
+        "verify", ("artifact_hashes", "command", "cwd", "detail", "exit_code",
+                   "passed", "source"), since="1.0",
         note="验证结论，判据级事实。`source` 是判据来源（`caller` / `model`，"
              "于 `VERIFY-VACUOUS` 追加）：调用方给的判据是权威的，模型自拟的"
              "必须先过可采性下限；两者可信度差很远，前端可用它区分显示，"
-             "**但不要**因为 `model` 就忽略 `passed`（判定只看退出码）"),
+             "**但不要**因为 `model` 就忽略 `passed`（判定只看退出码）。"
+             "★ `artifact_hashes` / `cwd`（`TRANSPARENCY3-BACKEND` P6）："
+             "**这次判词描述的是哪份产物、在哪个目录跑的** —— "
+             "`CycleReport.verify.artifact_hashes_final` 是交付时的哈希，"
+             "两者对不上时结局是 `invalid`（**读数无效**，不是模型失败）。"
+             "★ `exit_code`（`P17`）：**执行记录** —— `passed=true` 而它为空"
+             "说明执行事实缺失，pass 的 `executed` 证据不成立"),
     "verify_skipped": EventSpec(
         "verify_skipped", ("reason", "command"), since="1.1",
         note="★ 有验证命令却**没执行**（`FIX-VERIFY-WIRING` 附 1）。"
@@ -166,17 +175,86 @@ EVENTS: dict[str, EventSpec] = {
     "decision_action": EventSpec(
         "decision_action", ("action",), since="1.0"),
     "cycle_end": EventSpec(
-        "cycle_end", ("attempt", "commit", "error", "status"), since="1.0",
+        "cycle_end", ("attempt", "checked_by", "commit", "error", "evidence",
+                      "evidence_kind", "outcome", "outcome_reason",
+                      "status"), since="1.0",
         note="结束。status 与 CycleReport.phase 同源；"
-             "失败分支带 error，成功分支带 commit"),
+             "失败分支带 error，成功分支带 commit。"
+             "★ `outcome` 是**结局四值**（`pass`/`fail`/`abstain`/`invalid`，"
+             "`TRANSPARENCY2-BACKEND` P1）：`fail` = 试过了没达成，"
+             "`abstain` = 说不出什么叫对 / 自己声明做不到，"
+             "`invalid` = **判据或环境自身坏了，这次读数无效**。"
+             "`outcome_reason` 是可读理由。"
+             "★ `checked_by` / `evidence_kind` / `evidence`（`P17` `pass_evidence`）："
+             "**这次 pass 靠什么**（`executed{command,exit_code}` / "
+             "`artifacts[{path,sha256,size}]` / `static_declared{reason}`）。"
+             "换模型时若 pass 不区分证据，**更爱自我宣称的模型会拿到更高的分** —— "
+             "读数不可比，即插即用在测量层就断了"),
+    "orchestrator_round": EventSpec(
+        "orchestrator_round",
+        ("final_answer", "reasoning", "round", "status", "tasks"), since="1.2",
+        note="★ 每一轮编排器决策的**依据**（`TRANSPARENCY-BACKEND` A1）："
+             "`reasoning` 为什么这么决定、`tasks` 这一轮打算做什么。"
+             "以前它只在服务端日志里，事件流里没有。"
+             "**上游不发 `orchestrator_decision`** —— 那个 kind 由前端 bridge 发"
+             "（`bridge/hooks.py`），两个生产者发同一个 kind 会让审计无法判断"
+             "哪条权威；两边数据同源（同一个 `_decide` 返回值）"),
+    "verify_criterion": EventSpec(
+        "verify_criterion",
+        ("action", "command", "detail", "passed", "previous_command",
+         "previous_passed", "reason", "source"), since="1.2",
+        note="★ 验收判据的**演化**（B1）：`action ∈ {adopted, rejected, executed}`，"
+             "每条自带 `previous_command` / `previous_passed`，"
+             "所以『上一条真跑过、真失败，这一条换成了什么、为什么』"
+             "**不用按 seq 拼**。判据是目标达成的判据本身，它的变更必须可审计"),
+    "self_report": EventSpec(
+        "self_report",
+        ("approach", "confidence", "done", "error", "fact_check", "not_done",
+         "ok", "open_questions", "phase", "reflections", "why"), since="1.2",
+        note="★ 模型**收尾自述**（C1）+ 与机械事实的交叉核对（C2）。"
+             "`ok=false` 表示自述本身没生成出来（带 `error`），"
+             "**不是**『模型说没事』。`fact_check.contradictions` 是自述与机械事实"
+             "矛盾的地方（例：自称已产出某文件，而磁盘上没有）。"
+             "它是**报告不是门禁**：`phase` / `verify` / `commit` 不受它影响。"
+             "**前端请把 `fact_check` 的矛盾放在最显眼处**"),
+    "reuse": EventSpec(
+        "reuse", ("blocking", "checked", "passed", "warnings"), since="1.3",
+        note="★ 机械层**复用性**检查（`TRANSPARENCY2-BACKEND` P2，**阻塞**）。"
+             "实测依据：同一个概念模型发明了三个名字"
+             "（`generate_obstacles` / `generate_obstacles`@ant_colony / "
+             "`generate_obstacle_grid`），两次运行都因此失败。"
+             "`blocking` 只含**必然崩**的两类（调用了不存在的符号 / 用了没导入）；"
+             "`warnings` 是重复符号、未用导入、命名不一致 —— 看得见但不拦路"),
+    "decompose_review": EventSpec(
+        "decompose_review",
+        ("applied", "checked_by", "independent", "mode", "passed", "principles",
+         "summary", "undecidable", "violated"), since="1.3",
+        note="★ ③ 拆解合规关卡（P3，**与代码质量审查解耦**，机械层**有否决权**）。"
+             "`principles` 每条形如 `{principle, verdict: violated|ok|undecidable, "
+             "evidence, checked_by, independent}`。"
+             "★ `mode ∈ {off, warn, block}` + `applied`（`TRANSPARENCY3-BACKEND` P8）："
+             "**warn 模式下 `passed=false` 不影响运行通过** —— 不写清模式就会读成"
+             "「审查未通过」与「运行通过」并存。`applied=true` 才表示这次结论**真的用了"
+             "否决权**。"
+             "⚠️ `independent=false` 表示**独立审查模型未启用**（REVIEW 未配置）—— "
+             "`passed` 只代表**机械条款**通过，`undecidable` 非空说明审查范围不完整，"
+             "**不得**呈现为『审查通过』"),
 }
 
 # ---------- 冻结面：只增不减 ----------
 #: `CycleReport.to_dict()` 必须始终包含这些键（可新增）
 FROZEN_REPORT_KEYS: frozenset[str] = frozenset({
     "cycle_id", "goal", "phase", "transitions", "attempts", "check_steps",
-    "check", "manifest", "verify", "touched_files", "rolled_back", "commit",
-    "error",
+    "check", "manifest", "verify", "self_report", "touched_files",
+    "rolled_back", "commit", "error",
+    # —— `TRANSPARENCY2-BACKEND` P1：结局四值 + 判据来源进判定链 ——
+    "outcome", "outcome_reason", "verdict",
+    # —— P2 / P3：两条**有否决权**的机械关卡的结论 ——
+    "reuse_checks", "decompose_review",
+    # —— P14（`runtime_paths_and_output_contract`）：交付物对账（声明的 vs 实际） ——
+    "deliverables",
+    # —— P17（`pass_evidence`）：pass 的机械证据（checked_by + evidence_kind） ——
+    "evidence",
 })
 
 #: `Snapshot.to_dict()` 必须始终包含这些键（可新增）
@@ -189,6 +267,35 @@ FROZEN_SNAPSHOT_KEYS: frozenset[str] = frozenset({
 FROZEN_EVENT_FIELDS: frozenset[str] = frozenset({
     "kind", "cycle_id", "ts", "seq", "goal", "payload",
 })
+
+# ---------- 拆解原则（L1：**原则是契约载荷，执行方不得改写**）----------
+#: 来源：`STANDARD-capability-and-decomposition.md` §2。
+#: 为什么放在契约里（而不是审查模块里）：`§3.1 L1` 要求"原则本身是外部的" ——
+#: **执行方不参与定义"什么算好"**。审查器只读这份常量，不在这里改判据。
+#: 8 条里 **6 条完全机械**（P1/P2/P3/P4/P7/P8），P5/P6 机械近似 + `undecidable`。
+DECOMPOSE_PRINCIPLES: dict[str, dict[str, str]] = {
+    "P1": {"clause": "叶任务=单交付物", "judge": "mechanical",
+           "hint": "每个叶子的交付物符号数 == 1"},
+    "P2": {"clause": "叶任务=单判据", "judge": "mechanical",
+           "hint": "每个叶子恰好一条外部可执行判据"},
+    "P3": {"clause": "不并列", "judge": "mechanical",
+           "hint": "描述不含并列连接词（并/和/以及/同时/然后/再/与）—— 出现即疑似两件事"},
+    "P4": {"clause": "交付物不重叠", "judge": "mechanical",
+           "hint": "兄弟任务的交付物集合两两不相交"},
+    "P5": {"clause": "覆盖完备", "judge": "approximate",
+           "hint": "根目标里每条明确要求都有叶子覆盖（机械近似，判不了标 undecidable）"},
+    "P6": {"clause": "无同义重复", "judge": "approximate",
+           "hint": "任务描述两两语义不重复（词干重叠率低于阈值）"},
+    "P7": {"clause": "单调缩窄且有界", "judge": "mechanical",
+           "hint": "子交付物 ⊆ 父交付物；深度/叶子上限；同一签名再现 = 环"},
+    "P8": {"clause": "现在就写得判据", "judge": "mechanical",
+           "hint": "每个叶子在拆解时就能写出一条外部判据"},
+}
+
+#: 结局四值（`TRANSPARENCY2-BACKEND` P1 / 工作单 D19）。
+#: **没有 `invalid`**，"任务写错了"会被记成"模型不行"，污染能力画像；
+#: **没有 `abstain`**，用户要的"知道不能做什么"无处安放。
+OUTCOMES: tuple[str, ...] = ("pass", "fail", "abstain", "invalid")
 
 #: `TOOLS_MAP[name]` 必须始终包含这些键（前端读 description / profiles）
 FROZEN_TOOL_INFO_KEYS: frozenset[str] = frozenset({
@@ -390,7 +497,19 @@ def describe() -> dict:
         "ops_stale_by_transport": sorted(OPS_STALE_BY_TRANSPORT),
         # 前端对账时要提交的字段（多给无妨，少给会降低归因精度）
         "peer_report_fields": dict(PEER_FIELDS),
+        # 工具调用的规范形（1.0.30 `tool_call_contract`，P9）：
+        # **别名映射表在此公开声明**，而不是藏在代码里；
+        # `audit` 让"声明 vs 实现"（18 个工具是否都封闭）可机判。
+        "tool_call_contract": _tool_call_contract(),
     }
+
+
+def _tool_call_contract() -> dict:
+    """惰性导入：`tools` 包在模块导入期会建 workspace 目录，不适合作为
+    `core.contract` 的顶层依赖。"""
+    from tools.tool_contract import describe_contract
+
+    return describe_contract()
 
 
 # ============================================================================

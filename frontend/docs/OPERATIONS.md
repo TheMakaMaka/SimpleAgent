@@ -1,6 +1,6 @@
 # 运维与升级手册
 
-> **同步至 CHANGELOG §31** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §36** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 面向日常运维、模型接入与升级回归。架构原理见 `docs/ARCHITECTURE.md`，
 > 模块签名见 `docs/MODULES.md`，流程契约见 `CYCLE.md`。
@@ -785,11 +785,26 @@ curl -X POST http://127.0.0.1:8000/api/runs -H "Content-Type: application/json" 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 打开 `/app` 是 404 | 没构建前端 | `cd frontend && npm install && npm run build` |
+| **界面像是旧的（改过的东西没生效）** | **`dist` 与 `src` 分了家** | `python scripts/freshness.py`；要修就 `--fix` 或 `cd frontend && npm run build`。**判据是重新构建后逐文件比，不看 mtime** |
 | 顶栏「后端不可达」 | 服务没起 / 端口不对 | 见 §1.2；开发模式下看 Vite 代理的 `AGENT_BACKEND` |
 | 页面进去但事件不动 | SSE 被中间层缓冲 | 直接访问 `/api/runs/{id}/stream` 看是否有流；确认没有反向代理在攒响应 |
 | 「事件流中断」后自己恢复 | 正常：客户端带 `after=<seq>` 自动续订 | 持续不恢复时看后端日志是否有 500 |
 | 进度条不动但后端在跑 | 该运行的事件流被写失败 | 存储是旁路，不影响 cycle；查 `data/storage_data/runs/<id>/events.jsonl` 是否存在 |
 | `npm install` 报 `EPERM` | 沙箱/权限不允许派生带管道的子进程 | 换到允许的终端执行；或把 `--cache` 指到仓库内可写目录 |
+| 改完 `.ps1` 一跑就语法错误 | 编辑工具去掉了 **UTF-8 BOM**，PS 5.1 按 GBK 解 | `python scripts/fix_bom.py`（幂等）→ `python tests/unit/test_ps1_encoding.py` |
+
+### 10.3b 交付清单（每次交付前照做）
+
+前三条是**门禁**，第 4 条是**原因**——**别只跑 typecheck 就当交付完了**：
+
+| # | 命令 | 为什么 |
+|---|---|---|
+| 1 | `cd frontend && npm run build` | **交付物是 `dist/`**，不是 `src/` |
+| 2 | `python scripts/freshness.py` | 复核"dist 就是当前源码构建的"，并打印产物哈希 |
+| 3 | `python tests/run_unit.py` | 离线全量（含新鲜度门禁 `test_dist_freshness.py`） |
+| 4 | —— | ⚠ `npm run typecheck` 会重新生成 `src/generated/expectations.ts`，**但不会重建 `dist/`** —— 这正是"改过的 ≠ 交付的"那个坑 |
+
+`backup.ps1` 的 preflight 已经把第 2 条纳入：**dist 陈旧就不让备份通过**。
 
 ### 10.4 运行数据在哪
 

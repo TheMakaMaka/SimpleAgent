@@ -140,11 +140,22 @@ def main() -> int:
               set(spec["pipeline"]["upstream_phases"])
               | set(spec["pipeline"]["bridge_gate_steps"])
               == {s["id"] for s in spec["pipeline"]["stages"]})
-        check("event_partition 12 + 21",
-              len(spec["event_partition"]["upstream"]) == 12
+        # ★ 期望值**从契约 + 已登记滞后**推导，不写死：
+        #   上游加性新增事件时（`verify_skipped` 那次 33→34，`TRANSPARENCY-UI`
+        #   这次 34→37），红的是常数而不是接口。同一教训见 CHANGELOG §31.3。
+        try:
+            from bridge import partition as _part
+
+            _lag = len(getattr(_part, "CONTRACT_LAG_KINDS", frozenset()))
+        except Exception:  # noqa: BLE001
+            _lag = 0
+        _want_up = 12 + _lag
+        check(f"event_partition {_want_up} + 21",
+              len(spec["event_partition"]["upstream"]) == _want_up
               and len(spec["event_partition"]["frontend"]) == 21,
               f"{len(spec['event_partition']['upstream'])} + "
-              f"{len(spec['event_partition']['frontend'])}")
+              f"{len(spec['event_partition']['frontend'])}"
+              + (f"（契约 12 + 已登记滞后 {_lag}）" if _lag else ""))
         check("endpoint_partition 带 proxied_upstream",
               bool(spec["endpoint_partition"].get("proxied_upstream")),
               str(spec["endpoint_partition"].get("proxied_upstream")))
@@ -152,8 +163,9 @@ def main() -> int:
         rep = build_report(spec)
 
         print("\n[2] 上报体按来源分开（gap_G2 / gap_G3 / gap_G4）")
-        check("upstream_event_kinds == 上游 12 个",
-              len(rep["upstream_event_kinds"]) == 12, str(len(rep["upstream_event_kinds"])))
+        check(f"upstream_event_kinds == 上游 {_want_up} 个",
+              len(rep["upstream_event_kinds"]) == _want_up,
+              str(len(rep["upstream_event_kinds"])))
         check("phases == 上游 5 个（不含 manifest）",
               len(rep["phases"]) == 5 and "manifest" not in rep["phases"],
               str(rep["phases"]))

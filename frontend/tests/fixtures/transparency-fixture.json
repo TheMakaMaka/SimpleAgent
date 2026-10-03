@@ -1,0 +1,344 @@
+{
+  "_note": "TRANSPARENCY-UI 的 C3 夹具。**自述文本是明写的夹具**（扮演模型可能说的话），**fact_check 由上游 core.self_report.fact_check() 真代码产出**，机械事实取自固定样例 run_20260927_125647_5a3297 的 meta.json。由 tests/diagnostics/make_transparency_fixture.py 生成，不要手改。",
+  "_generator": "tests/diagnostics/make_transparency_fixture.py",
+  "_upstream": "D:\\PythonProject\\SimpleAgent2_Cycle",
+  "machine_facts": {
+    "phase": "record",
+    "workspace_files": [
+      "obstacle_generator.py",
+      "ant_colony.py",
+      "test_ant_colony.py"
+    ],
+    "touched_files": [
+      "obstacle_generator.py",
+      "ant_colony.py",
+      "test_ant_colony.py"
+    ],
+    "manifest_actual": [
+      "ant_colony.py",
+      "obstacle_generator.py",
+      "test_ant_colony.py"
+    ],
+    "manifest_declared": [
+      "obstacle_generator.py"
+    ],
+    "verify": {
+      "passed": true,
+      "detail": "（无输出）",
+      "command": "from obstacle_generator import generate_obstacles\nassert generate_obstacles, 'generate_obstacles 函数已修正'",
+      "source": "model"
+    },
+    "check": {
+      "checked": true,
+      "passed": true,
+      "status": "passed",
+      "skipped_reason": ""
+    },
+    "lint_failed": []
+  },
+  "self_report_honest": {
+    "done": [
+      "生成了 obstacle_generator.py（随机撒点的障碍物生成规则）",
+      "生成了 ant_colony.py（基础蚁群算法）",
+      "生成了 test_ant_colony.py（测试脚本）"
+    ],
+    "not_done": [
+      "**没有跑测试**：test_ant_colony.py 写出来了，但一次都没有执行过",
+      "**没有生成报告**：工作区里没有报告文件"
+    ],
+    "why": [
+      "把「写出来」当成了「验证过」，验收判据只查了 import 成功"
+    ],
+    "reflections": [
+      "目标里明确要求『连续测试验证』和『生成对应报告』，两项都没有做，也没有在结论里说明"
+    ],
+    "approach": [
+      "先设计障碍物生成规则，再写蚁群算法，最后补一个测试脚本"
+    ],
+    "confidence": {
+      "level": "medium",
+      "basis": "判据通过了，但那条判据只证明了函数名能导入"
+    },
+    "open_questions": [
+      "10*10 网格上起始点与目标点是否真的连通，没有检查过"
+    ],
+    "requirements": [],
+    "claims": {
+      "verify_passed": true,
+      "check_passed": true,
+      "artifacts": [
+        "obstacle_generator.py",
+        "ant_colony.py",
+        "test_ant_colony.py"
+      ]
+    },
+    "ok": true,
+    "phase": "record",
+    "fact_check": {
+      "checked": true,
+      "contradictions": [],
+      "unmentioned": [],
+      "notes": [
+        "`obstacle_generator.py` 确实在磁盘上",
+        "`ant_colony.py` 确实在磁盘上",
+        "`test_ant_colony.py` 确实在磁盘上",
+        "verify 断言与事实一致（passed=True）",
+        "check 断言与事实一致（status=passed）"
+      ],
+      "missing_fields": [],
+      "facts": {
+        "phase": "record",
+        "verify_passed": true,
+        "verify_source": "model",
+        "check_status": "passed",
+        "lint_failed": 0,
+        "workspace_files": [
+          "ant_colony.py",
+          "obstacle_generator.py",
+          "test_ant_colony.py"
+        ]
+      }
+    }
+  },
+  "self_report_lying": {
+    "done": [
+      "生成了 obstacle_generator.py、ant_colony.py、test_ant_colony.py",
+      "**连续测试验证已完成**：测试脚本已写好并运行通过",
+      "**已生成报告**：报告文件 report.md"
+    ],
+    "not_done": [],
+    "why": [],
+    "reflections": [
+      "流程整体顺利"
+    ],
+    "approach": [
+      "设计 → 实现 → 测试 → 报告"
+    ],
+    "confidence": {
+      "level": "high",
+      "basis": "全部完成"
+    },
+    "open_questions": [],
+    "requirements": [],
+    "claims": {
+      "verify_passed": true,
+      "check_passed": true,
+      "artifacts": [
+        "obstacle_generator.py",
+        "ant_colony.py",
+        "test_ant_colony.py",
+        "report.md"
+      ]
+    },
+    "ok": true,
+    "phase": "record",
+    "fact_check": {
+      "checked": true,
+      "contradictions": [
+        {
+          "kind": "artifact-missing",
+          "claim": "自述声称已产出 `report.md`",
+          "fact": "磁盘/清单里没有这个文件（实际存在：['ant_colony.py', 'obstacle_generator.py', 'test_ant_colony.py']）",
+          "severity": "high"
+        },
+        {
+          "kind": "done-mentions-missing-file",
+          "claim": "done 里提到 `report.md`",
+          "fact": "磁盘/清单里没有这个文件",
+          "severity": "high"
+        }
+      ],
+      "unmentioned": [],
+      "notes": [
+        "`obstacle_generator.py` 确实在磁盘上",
+        "`ant_colony.py` 确实在磁盘上",
+        "`test_ant_colony.py` 确实在磁盘上",
+        "verify 断言与事实一致（passed=True）",
+        "check 断言与事实一致（status=passed）"
+      ],
+      "missing_fields": [],
+      "facts": {
+        "phase": "record",
+        "verify_passed": true,
+        "verify_source": "model",
+        "check_status": "passed",
+        "lint_failed": 0,
+        "workspace_files": [
+          "ant_colony.py",
+          "obstacle_generator.py",
+          "test_ant_colony.py"
+        ]
+      }
+    }
+  },
+  "verdicts": {
+    "pass_model_self_authored": {
+      "outcome": "pass",
+      "outcome_kind": "verified",
+      "reason": "判据执行且通过",
+      "criterion_source": "model",
+      "criterion_trust": "model-self-authored",
+      "criterion_independent": false,
+      "note": "判据由模型自拟 —— 通过也要看得出这一点"
+    },
+    "abstain_no_criterion": {
+      "outcome": "abstain",
+      "outcome_kind": "no-admissible-criterion",
+      "reason": "模型自拟的判据全被拒（没有一条引用交付物）",
+      "criterion_source": "",
+      "criterion_trust": "none",
+      "criterion_independent": false,
+      "note": ""
+    },
+    "invalid_criterion_broken": {
+      "outcome": "invalid",
+      "outcome_kind": "criterion-broken",
+      "reason": "判据自身有语法错误（SyntaxError）—— 这次读数无效",
+      "criterion_source": "model",
+      "criterion_trust": "none",
+      "criterion_independent": false,
+      "note": ""
+    },
+    "fail_verify_failed": {
+      "outcome": "fail",
+      "outcome_kind": "verify-failed",
+      "reason": "判据真跑过、断言没过",
+      "criterion_source": "caller",
+      "criterion_trust": "none",
+      "criterion_independent": true,
+      "note": ""
+    }
+  },
+  "decompose_review": {
+    "checked_by": "tool",
+    "independent": false,
+    "mechanical_only": true,
+    "model_layer": {
+      "available": false,
+      "reason": "REVIEW 角色未配置 → 判断类审查（L3）**未启用**；本结论只覆盖机械条款，不得呈现为『审查通过』"
+    },
+    "passed": false,
+    "violated": [
+      "P3",
+      "P4",
+      "P6",
+      "P7",
+      "P8"
+    ],
+    "undecidable": [
+      "P2",
+      "P5"
+    ],
+    "coverage_complete": false,
+    "principles": [
+      {
+        "principle": "P1",
+        "verdict": "ok",
+        "evidence": [
+          "每个交付物恰好 1 个符号（共 2 个）"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "mechanical"
+      },
+      {
+        "principle": "P2",
+        "verdict": "undecidable",
+        "evidence": [
+          "当前拆解形态没有**逐叶判据**（只有 cycle 级一条）—— 无法判『单判据』；按 §1.2 A3，原子任务本应有逐叶外部判据"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "approximate"
+      },
+      {
+        "principle": "P3",
+        "verdict": "violated",
+        "evidence": [
+          "t1「设计并实现障碍物生成规则」含并列词 ['并']",
+          "t2「编写蚁群算法实现并保存到 ant_colony.py」含并列词 ['并']",
+          "t3「编写蚁群算法测试代码并保存到 test_ant_colony.py」含并列词 ['并']",
+          "t3「实现随机障碍物生成规则并保存到 obstacle_generator.py」含并列词 ['并']",
+          "t4「完善蚁群算法实现并保存到 ant_colony.py」含并列词 ['并']"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "mechanical"
+      },
+      {
+        "principle": "P4",
+        "verdict": "violated",
+        "evidence": [
+          "符号 `AntColony` 被 ant_colony.py 与 ant_colony.py 同时声明",
+          "t2 与 t8 动同一个文件 ['ant_colony.py']",
+          "t2 与 t1 动同一个文件 ['ant_colony.py']",
+          "t2 与 t2 动同一个文件 ['ant_colony.py']",
+          "t2 与 t4 动同一个文件 ['ant_colony.py']"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "mechanical"
+      },
+      {
+        "principle": "P5",
+        "verdict": "undecidable",
+        "evidence": [
+          "拆解里没有给出『根目标的明确要求』清单 —— 无法判覆盖完备（机械近似需要那份清单）"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "approximate"
+      },
+      {
+        "principle": "P6",
+        "verdict": "violated",
+        "evidence": [
+          "t2 与 t4 描述相似度 0.73（阈值 0.6）—— 疑似同义重复",
+          "t7 与 t8 描述相似度 0.92（阈值 0.6）—— 疑似同义重复",
+          "t1 与 t2 描述相似度 0.77（阈值 0.6）—— 疑似同义重复",
+          "t1 与 t5 描述相似度 0.69（阈值 0.6）—— 疑似同义重复",
+          "t1 与 t10 描述相似度 0.71（阈值 0.6）—— 疑似同义重复"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "approximate"
+      },
+      {
+        "principle": "P7",
+        "verdict": "violated",
+        "evidence": [
+          "叶子数 19 超过上限 12",
+          "任务 id 重复：['t1', 't10', 't2', 't3', 't4', 't5', 't6', 't7', 't8']（同一节点出现两次 = 环的征兆）"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "mechanical"
+      },
+      {
+        "principle": "P8",
+        "verdict": "violated",
+        "evidence": [
+          "t1 既没有 expected_output 也没有判据 —— 拆解时就写不出『怎么算对』",
+          "t2 既没有 expected_output 也没有判据 —— 拆解时就写不出『怎么算对』",
+          "t3 既没有 expected_output 也没有判据 —— 拆解时就写不出『怎么算对』",
+          "t4 既没有 expected_output 也没有判据 —— 拆解时就写不出『怎么算对』",
+          "t5 既没有 expected_output 也没有判据 —— 拆解时就写不出『怎么算对』"
+        ],
+        "checked_by": "tool",
+        "independent": false,
+        "level": "mechanical"
+      }
+    ],
+    "summary": "机械层：1 条通过 / 5 条违反 ['P3', 'P4', 'P6', 'P7', 'P8'] / 2 条判不了 ['P2', 'P5']；**且 L3 判断类审查未启用**（REVIEW 未配置）"
+  },
+  "decompose_input": {
+    "tasks": 19,
+    "files": 2
+  },
+  "reuse": {
+    "checked": true,
+    "passed": true,
+    "blocking": [],
+    "warnings": []
+  }
+}

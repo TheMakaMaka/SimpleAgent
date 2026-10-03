@@ -12,7 +12,7 @@ export const SUPPORTED_SPEC = '1.0'
 export const EXPECTATIONS = {
   spec_version: SUPPORTED_SPEC,
   /** store/run.ts 的 case 列表 */
-  events: ["attempt_start","baseline","cancel_requested","cancelled","cycle_end","cycle_start","decision_action","decision_notified","decision_opened","error","files","lint","manifest","model_reply","orchestrator_decision","phase","plan","queued","retry","rollback","rollback_denied","round_start","run_end","run_start","syntax","task_done","task_result","task_start","tool_call","tool_result","verify","verify_probe","verify_skipped","worker_step"],
+  events: ["attempt_start","baseline","cancel_requested","cancelled","cycle_end","cycle_start","decision_action","decision_notified","decision_opened","decompose_review","error","files","lint","manifest","model_reply","orchestrator_decision","orchestrator_round","phase","plan","queued","retry","reuse","rollback","rollback_denied","round_start","run_end","run_start","self_report","syntax","task_done","task_result","task_start","tool_call","tool_result","verify","verify_criterion","verify_probe","verify_skipped","worker_step"],
   /** api/client.ts 用到的端点 key */
   endpoints: ["answer_decision","audit","decisions","health","insights","profile","run","run_events","run_stream","runs","spec","workspace_file","workspace_tree"],
   /** api/spec.ts 的 DEFAULT_SPEC 内置阶段 */

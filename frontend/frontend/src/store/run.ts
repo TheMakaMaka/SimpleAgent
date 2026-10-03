@@ -17,6 +17,11 @@
  */
 import { computed, reactive } from 'vue'
 import { config } from '@/config'
+import { collectTransparency, ingestReport } from '@/store/transparency'
+// 工具参数摘要的实现搬到了 `store/args.ts`（A3 面板要用同一份）。
+// 这里重新导出，是为了让既有调用点（ArtifactPanel 等）不用改。
+export { describeArgs } from '@/store/args'
+import { describeArgs } from '@/store/args'
 import {
   autoDetail,
   eventSpec,
@@ -84,6 +89,23 @@ export function createInitialState(): RunState {
     verifyProbes: 0,
     verifySkipped: [],
     rounds: 0,
+
+    // TRANSPARENCY-UI：四块「为什么」视图的初值。
+    // 注意 `selfReport` 的初值是 **null 而不是空对象** —— 空对象会被渲染成
+    // "有自述、内容为空"，那是把"没有"说成了"空"。见 selfReportAbsentReason。
+    decisionRounds: [],
+    modelTurns: [],
+    criteria: [],
+    selfReport: null,
+    selfReportAbsentReason: '',
+    factCheck: null,
+    outcome: { value: 'unknown', raw: '', source: '', reason: '', legacyVocabulary: false },
+    // P3/P4：后端**权威**的结局与两条机械关卡的结论（都由报告/事件带来，取不到就是 null）
+    verdict: null,
+    decomposeReview: null,
+    reuse: null,
+    transparencySeq: 0,
+
     steps: 0,
     modelReplies: 0,
     events: 0,
@@ -286,6 +308,15 @@ export function applyEvent(state: RunState, ev: AgentEvent, now: number = Date.n
   const kind = String(ev.kind || '')
   const attempt = Number(ev.attempt ?? state.attempt ?? 1)
 
+  // 透明化视图（A2/A3/B4/C3/D3）先采一遍。它**声明**自己渲染的事件
+  // （目前只有后端尚未交付的 `self_report`/`fact_check`）由它出时间线行，
+  // 其余一律返回 null，照旧走下面的 switch —— 所以既有的渲染没有被挪动。
+  const claimed = collectTransparency(state, ev, now)
+  if (claimed) {
+    push(state, now, claimed)
+    return
+  }
+
   switch (kind) {
     case 'queued': {
       state.status = 'queued'
@@ -415,7 +446,9 @@ export function applyEvent(state: RunState, ev: AgentEvent, now: number = Date.n
       push(state, now, {
         kind,
         tone: 'model',
-        title: `主模型决策 → ${ev.status}`,
+        // ★ 是**编排器**的决策，不是"主模型"。事件名就叫 `orchestrator_decision`，
+        //   而这里原先写成「主模型决策」——透明化先说清"这是谁在说话"。
+        title: `编排器决策 → ${ev.status}`,
         detail: String(ev.reasoning || ev.final_answer || '').slice(0, 400),
         seq: ev.seq,
         ts: ev.ts,
@@ -872,29 +905,6 @@ function statusLabel(status: CheckStepView['status']): string {
   return status === 'passed' ? '通过' : status === 'skipped' ? '未执行' : '有问题'
 }
 
-/**
- * 工具调用的可读摘要——这是「它现在到底在干什么」的答案。
- *
- * 少量**结构化摘要**规则（写出哪个文件、跑多少行代码）留在这里：
- * 它们依赖各工具参数的具体形状，标定表达不了。
- * 其余情况回退到"列出参数名"，够用且不会因为新工具而崩。
- */
-const ARG_SUMMARY: Record<string, (args: Record<string, unknown>) => string> = {
-  write_file: (a) => `写入 ${a.filename ?? '?'}（${String(a.content ?? '').length} 字符）`,
-  read_file: (a) => `读取 ${a.filename ?? '?'}`,
-  run_python: (a) => `执行 ${String(a.code ?? '').split('\n').length} 行 Python`,
-  check_and_run: (a) => `执行 ${String(a.code ?? '').split('\n').length} 行 Python`,
-  check_syntax: (a) => `语法检查 ${String(a.code ?? '').length} 字符`,
-}
-
-export function describeArgs(tool: string, args: Record<string, unknown>): string {
-  if (!args || typeof args !== 'object') return ''
-  const fn = ARG_SUMMARY[tool]
-  if (fn) return fn(args)
-  const keys = Object.keys(args)
-  return keys.length ? keys.join(', ') : ''
-}
-
 /* ------------------------------------------------------------------ */
 /* 一个可复用的运行状态实例                                            */
 /* ------------------------------------------------------------------ */
@@ -903,6 +913,13 @@ export interface RunStore {
   reset: (runId?: string | null) => void
   ingest: (ev: AgentEvent) => void
   ingestMany: (evs: AgentEvent[]) => void
+  /**
+   * 收下**运行报告**（`GET /api/runs/{id}` 的 `run.report`）。
+   *
+   * P3/P4 的事实（结局四值、判据来源、独立性、拆解合规审查、复用性检查）
+   * **首先是报告字段** —— 旧运行的事件里没有它们。所以运行详情要单独取一次。
+   */
+  ingestReportInfo: (report: unknown) => void
   /** 标定加载后刷新阶段清单（不动进行中的运行） */
   syncStages: () => void
 }
@@ -937,7 +954,11 @@ export function useRunStore(): RunStore {
     for (const ev of evs) applyEvent(state, ev, tsToMs(ev.ts))
   }
 
-  return { state, reset, ingest, ingestMany, syncStages }
+  function ingestReportInfo(report: unknown) {
+    ingestReport(state, report, Date.now())
+  }
+
+  return { state, reset, ingest, ingestMany, ingestReportInfo, syncStages }
 }
 
 /* ------------------------------------------------------------------ */

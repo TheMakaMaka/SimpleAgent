@@ -254,11 +254,15 @@ def main() -> int:
           f"不存在 {missing or '无'}")
 
     # 反向：真实存在的顶层包，README 结构里应当提到
+    # `workspace/` / `sessions/` / `docs/` 是**运行时/文档**目录，不属于代码包；
+    # ★ P14 新增 `outputs/`（**输出根**：交付物落这里）—— 与 workspace 同类，
+    # 都是运行期生成的目录，因此同样排除（README 正文另有说明）。
+    RUNTIME_DIRS = {"workspace", "docs", "sessions", "outputs"}
     real_pkgs = sorted(
         n for n in os.listdir(ROOT)
         if os.path.isdir(os.path.join(ROOT, n))
         and not n.startswith((".", "_"))
-        and n not in {"workspace", "docs", "sessions"}
+        and n not in RUNTIME_DIRS
     )
     not_mentioned = [p for p in real_pkgs if f"{p}/" not in readme]
     checks.append(("README 结构覆盖全部顶层包", not not_mentioned))

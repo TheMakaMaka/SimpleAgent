@@ -36,9 +36,11 @@ _MAX_PATTERNS = 12
             "limit_cycles": {
                 "type": "integer",
                 "description": "分析最近多少个 cycle（默认 20）",
+                "default": 20,
             }
         },
         "required": [],
+        "additionalProperties": False,
     },
     profiles=("coding",),
 )

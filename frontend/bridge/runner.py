@@ -484,12 +484,50 @@ class RunManager:
         self._save(info)
         log = self._logs.get(info.run_id)
         if log is not None:
+            # ★ P3（`TRANSPARENCY2-UI`）：把**结局四值 + 判据来源 + 审查独立性**
+            #   一并放进 `run_end`。
+            #
+            #   为什么不让前端自己去翻报告：界面是**事件驱动**的，实时流与历史回放
+            #   共用同一条路（`store/run.ts`）。放进报告而不放进事件，就会出现
+            #   "实时看得到、回放看不到"这种最难查的差异。
+            #
+            #   字段名照抄上游 `core/outcome.py:89 build_verdict()` 与
+            #   `core/cycle.py:145-146`（`outcome` / `outcome_reason` / `verdict`），
+            #   **不改名、不重算** —— 前端只呈现，不做第二个体检口径。
+            verdict = self._verdict_of(info)
             log.append(
                 "run_end", run_id=info.run_id, status=info.status,
                 phase=info.phase, attempts=info.attempts, error=info.error or "",
                 commit=info.commit or "", rolled_back=info.rolled_back,
                 touched_files=info.touched_files, summary=info.summary,
+                **verdict,
             )
+
+    @staticmethod
+    def _verdict_of(info: RunInfo) -> dict:
+        """从报告里取结局四值那一组事实（取不到就**什么都不加**）。
+
+        `{}` 与"给个默认值"是**两件事**：字段缺席时前端显示「后端未产出」，
+        而不是显示一个我编的 `fail`。所以这里绝不补默认值。
+        """
+        rep = info.report if isinstance(info.report, dict) else {}
+        out: dict = {}
+        verdict = rep.get("verdict")
+        if isinstance(verdict, dict):
+            for src, dst in (("outcome", "outcome"), ("outcome_kind", "outcome_kind"),
+                             ("reason", "outcome_reason"),
+                             ("criterion_source", "criterion_source"),
+                             ("criterion_trust", "criterion_trust"),
+                             ("criterion_independent", "criterion_independent"),
+                             ("note", "outcome_note")):
+                if verdict.get(src) is not None:
+                    out[dst] = verdict[src]
+        # 报告顶层的 `outcome` / `outcome_reason`（`core/cycle.py:145-146`）是同一件事，
+        # 有的后端版本只填这两个 —— 缺 `verdict` 时补上。
+        for key in ("outcome", "outcome_reason"):
+            if key in rep and key not in out and rep[key] is not None:
+                out[key] = rep[key]
+        return out
 
     # ---------- 决策（供 SPA 内联作答） ----------
     def pending_decisions(self, run_id: str | None = None) -> list[dict]:

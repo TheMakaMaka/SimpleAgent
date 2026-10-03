@@ -17,11 +17,14 @@ from .context import (
 from .cycle import PHASE_ORDER, CyclePhase, CycleReport, VerifyCommand
 from .decisions import DecisionManager, FAILURE_OPTIONS, ROLLBACK_OPTIONS
 from .notify import build_notifier
+from . import runtime
+from .runtime import check_deliverables
 from .symbol_index import build_index
 from .manifest import parse_declared
 from .memory import SharedMemory
 from .orchestrator import Orchestrator
 from .pipeline import CheckPipeline
+from .symbol_index import _SKIP_DIRS
 from .task import Artifact
 from .worker import Worker
 from storage.store import Event, Storage, default_storage
@@ -68,6 +71,14 @@ class CodingCycle:
 
         # 本次 cycle 之前 workspace 里已存在的文件；用于区分「目标文件」与历史文件
         self._prior_files: list[str] = []
+
+        # ★ P14：任务输入里**声明的交付物**（`{path, sha256?, size?}` 列表）。
+        # 声明了就必须存在且哈希一致；没声明也照常回报实际产物。
+        self._declared_deliverables: list = []
+
+        # ★ P17：调用方为**静态交付物**给的可复核理由（没有可执行判据时用）。
+        # 它是 `static_declared` 证据的 `reason`；空串 ⇒ 这类证据不成立。
+        self._static_reason: str = ""
 
         # 当前 cycle_id：结构化上下文压缩需要按 cycle 分组事件
         self._current_cycle_id: str = ""
@@ -287,6 +298,41 @@ class CodingCycle:
         self,
         goal: str,
         verify_command: VerifyCommand | None = None,
+        deliverables: list | None = None,
+        project_root: str | None = None,
+        static_reason: str = "",
+    ) -> tuple[CycleReport, SharedMemory]:
+        """一轮 cycle。
+
+        ★ **P15**：`project_root` 是**任务级目标项目根**（用户 2026-10-03 裁决：
+        每次任务给一个，不是进程级）。传了就在本次任务期间生效 —— 六个文件/结构
+        工具（`read_file` / `write_file` / `list_workspace` / `get_architecture` /
+        `get_module` / `find_symbol`）与 check / verify **一律以它为根**；
+        **退出时一定还原**（异常路径也还原）。
+
+        ★ **P14**：`deliverables` 是任务开始前**声明的交付物**
+        （`["out.txt"]` 或 `[{"path": "...", "sha256": "...", "size": 12}]`）。
+        声明了 ⇒ 它必须存在且哈希一致，否则结局 `delivery-gap`（fail）。
+        无论有没有声明，`CycleReport.deliverables` 都回报磁盘上的**实际产物**
+        `{path, sha256, size}` —— 这正是用户要的「知道做了什么」。
+
+        ★ **P17**：`static_reason` 是调用方为**静态交付物**给的可复核理由
+        （例：「本次交付物是说明文档，不是代码，没有可执行判据」）。
+        只有它非空时，`pass` 才能以 `static_declared` 作为证据类别；
+        主流程的 `pass` 通常走 `executed`（判据真的被执行、退出码已记录）。
+        """
+        self._declared_deliverables = list(deliverables or [])
+        self._static_reason = str(static_reason or "")
+        token = runtime.set_project_root(project_root)
+        try:
+            return await self._run_cycle(goal, verify_command=verify_command)
+        finally:
+            runtime.reset_project_root(token)
+
+    async def _run_cycle(
+        self,
+        goal: str,
+        verify_command: VerifyCommand | None = None,
     ) -> tuple[CycleReport, SharedMemory]:
         cycle_id = f"cy_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         self._current_cycle_id = cycle_id
@@ -382,6 +428,38 @@ class CodingCycle:
                 self._emit("verify_skipped", cycle_id, goal=goal,
                            reason=str(rejected)[:600], command="")
 
+            # ★ A1（`TRANSPARENCY-BACKEND`）：把每一轮的**决策依据**变成事件。
+            # 原来 `reasoning` 只在服务端日志里（`[决策] status=... reasoning=...`），
+            # 事件流里没有 → 前端无从显示"第 2 轮为什么又去改这个文件"。
+            # 上游不发 `orchestrator_decision`：那个 kind 归前端 bridge
+            # （`bridge/hooks.py:306`），两个生产者发同一个 kind 会让审计无法判断
+            # 哪条权威。这里用独立名字 `orchestrator_round`。
+            for d in (getattr(memory, "decision_log", None) or []) if memory else []:
+                self._emit(
+                    "orchestrator_round", cycle_id, goal=goal,
+                    round=int(d.get("round") or 0),
+                    status=str(d.get("status") or ""),
+                    reasoning=str(d.get("reasoning") or "")[:600],
+                    tasks=d.get("tasks") or [],
+                    final_answer=str(d.get("final_answer") or "")[:300],
+                )
+
+            # ★ B1：判据的**演化**（候选/采纳/拒绝/执行）逐条留痕，
+            # 每条自带 `previous_command` / `previous_passed` —— 于是
+            # "上一条真跑过、真失败，这一条换成了什么、为什么"不用按 seq 拼。
+            for c in (getattr(memory, "criterion_log", None) or []) if memory else []:
+                self._emit(
+                    "verify_criterion", cycle_id, goal=goal,
+                    action=str(c.get("action") or ""),
+                    command=str(c.get("command") or "")[:500],
+                    reason=str(c.get("reason") or "")[:300],
+                    passed=c.get("passed"),
+                    detail=str(c.get("detail") or "")[:300],
+                    source=str(c.get("source") or ""),
+                    previous_command=str(c.get("previous_command") or "")[:500],
+                    previous_passed=c.get("previous_passed"),
+                )
+
             # 计划事件：声明清单 + 验证命令（意图，不是现实）
             declared = []
             for d in parse_declared(orch_result.declared_files):
@@ -422,8 +500,19 @@ class CodingCycle:
             if not memory.records:
                 report.error = "本轮没有产生任何任务执行记录"
                 report.enter(CyclePhase.FAILED)
-                self._emit("cycle_end", cycle_id, goal=goal,
-                           status="failed", error=report.error, attempt=attempt)
+                self._end_cycle(report, cycle_id, goal, "failed", "no-tasks", attempt)
+                continue
+
+            # ---------- ③ 拆解合规关卡（P3，**与代码质量审查解耦**）----------
+            # 只要「计划 + 原则」，不需要架构视野 —— 所以放在这里、用机械层判。
+            if await self._review_decomposition(report, cycle_id, goal,
+                                                orch_result, declared):
+                # 否决：不进入写码/验证，直接算这一轮没通过（要求重拆或 abstain）
+                report.enter(CyclePhase.FAILED)
+                self._end_cycle(report, cycle_id, goal, "failed",
+                                "decomposition-violation", attempt)
+                if attempt < self.max_attempts:
+                    self._rollback_after_confirm(base_ref, report, goal)
                 continue
 
             # 进入 WRITE 阶段：模型已落盘实现（编排器内部完成），本阶段结束
@@ -454,8 +543,7 @@ class CodingCycle:
                 report.error = self._manifest_error_text(manifest)
                 report.enter(CyclePhase.FAILED)
                 self._log(f"[manifest] 交付缺口: {report.error[:200]}")
-                self._emit("cycle_end", cycle_id, goal=goal, status="failed",
-                           error=report.error, attempt=attempt)
+                self._end_cycle(report, cycle_id, goal, "failed", "delivery-gap", attempt)
                 if attempt < self.max_attempts:
                     self._rollback_after_confirm(base_ref, report, goal)
                 continue
@@ -465,6 +553,15 @@ class CodingCycle:
 
             check = await self.pipeline.run_check(touched)
             report.check_steps = check["steps"]
+            # ★ P2：机械层复用性检查的结论进报告 + 事件（**有否决权**）
+            reuse = check.get("reuse") or {}
+            report.reuse_checks = reuse or None
+            if reuse:
+                self._emit("reuse", cycle_id, goal=goal,
+                           checked=bool(reuse.get("checked")),
+                           passed=bool(reuse.get("passed")),
+                           blocking=list(reuse.get("blocking") or [])[:5],
+                           warnings=list(reuse.get("warnings") or [])[:5])
             # ★ 「没东西可查」必须与「查过并通过」可区分（`VERIFY-VACUOUS` 建议 4）。
             # 原来只报 `passed=True steps=0`，两者同形 —— 实测被读成绿灯，
             # 而那一轮其实什么都没查（三个绿灯叠在一起 = 什么都没干）。
@@ -485,8 +582,29 @@ class CodingCycle:
             if not check["passed"]:
                 report.error = self._check_error_text(check)
                 report.enter(CyclePhase.FAILED)
-                self._emit("cycle_end", cycle_id, goal=goal, status="failed",
-                           error=report.error, attempt=attempt)
+                self._end_cycle(report, cycle_id, goal, "failed",
+                                self._check_outcome_kind(check), attempt)
+                if attempt < self.max_attempts:
+                    self._rollback_after_confirm(base_ref, report, goal)
+                continue
+
+            # ---------- ★ P14 交付物对账（声明的必须存在且哈希一致）----------
+            # 放在 check 之后、verify 之前：文件压根没产出时，再跑验证也只是
+            # 拿间接症状（FileNotFoundError）去猜，不如直接指出「声明了 X，X 不在」。
+            # 没有声明时也回报**实际产物**（用户要「知道做了什么」）。
+            dv = check_deliverables(self._declared_deliverables,
+                                    extra_touched=touched)
+            report.deliverables = dv
+            self._log(
+                f"[deliverables] declared={len(dv.get('declared') or [])} "
+                f"passed={dv.get('passed')} "
+                f"violations={len(dv.get('violations') or [])}"
+            )
+            if dv.get("checked") and not dv.get("passed"):
+                report.error = self._deliverable_error_text(dv)
+                report.enter(CyclePhase.FAILED)
+                self._end_cycle(report, cycle_id, goal, "failed",
+                                "delivery-gap", attempt)
                 if attempt < self.max_attempts:
                     self._rollback_after_confirm(base_ref, report, goal)
                 continue
@@ -523,8 +641,8 @@ class CodingCycle:
                     )
                 self._log(f"[verify] 拒绝通过：{report.error}")
                 report.enter(CyclePhase.FAILED)
-                self._emit("cycle_end", cycle_id, goal=goal, status="failed",
-                           error=report.error, attempt=attempt)
+                self._end_cycle(report, cycle_id, goal, "failed",
+                                self._no_verify_kind(memory), attempt)
                 if attempt < self.max_attempts:
                     self._rollback_after_confirm(base_ref, report, goal)
                 continue
@@ -537,6 +655,16 @@ class CodingCycle:
                 # model = 模型自拟（已经过可采性下限）。两者可信度差很远，
                 # 而在这之前外部**完全无法区分**。
                 "source": memory.verify_state.get("source", ""),
+                # ★ P6：**判词描述的是哪份产物** + 在哪个目录跑的。
+                # 只有内容哈希能与"最终交付的产物"逐字对账。
+                "artifact_hashes": dict(memory.verify_state.get("artifact_hashes") or {}),
+                "cwd": memory.verify_state.get("cwd", ""),
+                "cache_cleared": memory.verify_state.get("cache_cleared", 0),
+                "cache_warning": memory.verify_state.get("cache_warning", ""),
+                # ★ P17：**执行记录**（真实退出码 + 期望值）。pass 的
+                # `executed` 证据要求 exit_code 非空 —— 没有它就没有机械证据。
+                "exit_code": memory.verify_state.get("exit_code"),
+                "expect_exit": memory.verify_state.get("expect_exit"),
             }
             self._log(
                 f"[verify] passed={report.verify['passed']} "
@@ -549,13 +677,70 @@ class CodingCycle:
                 detail=str(report.verify.get("detail") or "")[:300],
                 command=str(report.verify.get("command") or "")[:500],
                 source=report.verify["source"],
+                # ★ P6：事件里也要能读到"判词描述的是哪份产物"与工作目录
+                artifact_hashes=report.verify.get("artifact_hashes") or {},
+                cwd=str(report.verify.get("cwd") or ""),
+                # ★ P17：执行记录进事件 —— "真的跑过"这件事必须可审计
+                exit_code=report.verify.get("exit_code"),
             )
 
             if not report.verify["passed"]:
+                # ★ P13（用户 2026-10-03 裁决 A9②）：**归因要看判据是谁写的**。
+                #
+                # 只有判据出自 `caller` 时，`criterion-broken` 才允许记 `invalid`
+                # —— 那是**测量工装**的问题（`core/outcome.py` 对 invalid 的定义）。
+                # 而**模型自拟的判据就是被测行为的一部分**：它引用一个自己从没
+                # 交付的符号，是**它没做到**，不是尺坏了。所以走**已现成**的
+                # `delivery-gap → fail`，不新造结局。
+                #
+                # 方向：**这不是把尺放宽，是把尺收紧** —— 少一批「无可奉告」，
+                # 多一批「模型没做到」。此前这里只对判据正文跑 `check_code`、
+                # **完全不看 `report.verify["source"]`**（该字段就在上文已就绪），
+                # 于是模型自拟的坏判据也被记成 invalid，把能力画像冲淡了。
+                from .outcome import classify_verify_detail
+                from .reuse_checks import BLOCKING_KINDS, check_code
+
+                source = str(report.verify.get("source") or "")
+                caller_authoritative = source == "caller"
+                crit_kind, crit_why = "verify-failed", ""
+                cmd = str(report.verify.get("command") or "")
+                crit_violations, _refs = (check_code(cmd, label="<判据>")
+                                          if cmd else ([], set()))
+                blocking = [v for v in crit_violations
+                            if v.get("kind") in BLOCKING_KINDS]
+                if blocking:
+                    detail = str(blocking[0].get("message", ""))
+                    if caller_authoritative:
+                        crit_kind = "criterion-broken"
+                        crit_why = (f"**调用方**判据自身引用了不存在的符号：{detail}"
+                                    " → 本次读数 invalid（判据/工装的问题）")
+                    else:
+                        crit_kind = "delivery-gap"
+                        crit_why = (
+                            f"**模型自拟**的判据引用了自己没交付的符号：{detail}"
+                            f"（source={source or '未标注'}）→ 记 fail："
+                            "判据是模型写的，就属被测行为的一部分，不能算「尺坏了」"
+                        )
+                else:
+                    detail_kind, detail_why = classify_verify_detail(
+                        str(report.verify.get("detail") or ""))
+                    if (detail_kind in ("criterion-broken", "environment-missing")
+                            and not caller_authoritative):
+                        crit_kind = "delivery-gap"
+                        crit_why = (
+                            f"{detail_why}；但判据是**模型自拟**的"
+                            f"（source={source or '未标注'}）⇒ 走 delivery-gap（fail），"
+                            "不记 invalid（P13：invalid 只留给 caller 的坏判据）"
+                        )
+                    else:
+                        crit_kind, crit_why = detail_kind, detail_why
+                report.outcome_kind = crit_kind
                 report.error = f"验证未通过: {report.verify.get('detail')}"
+                if crit_kind != "verify-failed":
+                    report.error = f"{report.error}（{crit_why}）"
                 report.enter(CyclePhase.FAILED)
-                self._emit("cycle_end", cycle_id, goal=goal, status="failed",
-                           error=report.error, attempt=attempt)
+                self._end_cycle(report, cycle_id, goal, "failed",
+                                report.outcome_kind or "verify-failed", attempt)
                 # 连续失败达阈值 → 转人工决策（这是最该停的一处）
                 action = self._maybe_ask_on_failure(report, goal)
                 self._emit("decision_action", cycle_id, goal=goal, action=action)
@@ -568,14 +753,71 @@ class CodingCycle:
                         f"人工放宽验收（验证未通过: {report.verify.get('detail')}）"
                     )
                     self._log("[决策] 人工放宽验收，跳过验证门禁")
-                    self._emit("cycle_end", cycle_id, goal=goal, status="relaxed",
-                               error=report.error, attempt=attempt)
+                    self._end_cycle(report, cycle_id, goal, "relaxed", "relaxed", attempt)
                     break
                 if attempt < self.max_attempts:
                     self._rollback_after_confirm(base_ref, report, goal)
                 continue
 
             # ---------- 记录 ----------
+            # ★★ P6：**被验证的对象必须就是被交付的对象**（与 FIX-VERIFY-WIRING 同族）。
+            # 在打检查点**之前**重新对被验证产物取一次内容哈希：
+            # 对不上 → 这次读数**无效**（`invalid`），**不记 pass、也不打检查点**。
+            # 为什么放在这里：这是"判词"与"最终产物"唯一能对账的时刻。
+            final_hashes = self.pipeline.artifact_hashes(
+                list((report.verify or {}).get("artifact_hashes") or {})
+            )
+            report.verify["artifact_hashes_final"] = final_hashes
+            mismatch = [
+                f"{p}: 验证时 {h} → 交付时 {final_hashes.get(p)}"
+                for p, h in (report.verify.get("artifact_hashes") or {}).items()
+                if final_hashes.get(p) != h
+            ]
+            if mismatch:
+                report.verify["artifact_mismatch"] = mismatch
+                report.error = (
+                    "被验证的产物**不等于**被交付的产物 —— 判词不描述产物，"
+                    "本次读数**invalid**：" + "；".join(mismatch[:3])
+                )
+                report.enter(CyclePhase.FAILED)
+                self._log(f"[verify] 产物对账失败: {report.error[:200]}")
+                self._end_cycle(report, cycle_id, goal, "failed",
+                                "artifact-mismatch", attempt)
+                if attempt < self.max_attempts:
+                    self._rollback_after_confirm(base_ref, report, goal)
+                continue
+
+            # ---------- ★ P17：pass 必须带**机械证据** ----------
+            # 用户这一轮的目的：**换模型之前把边界验证好、模型即插即用**。
+            # 统筹方实测（`SWAP-READY` S3）：8 个 pass 里只有 1 个有执行证据，
+            # 而 self_report 11/11 ⇒ **更爱自我宣称的模型会拿到更高的分**，
+            # 读数不可比。所以：**每次 pass 必须带 `checked_by` + `evidence_kind`**；
+            # `checked_by=model` 且无 `evidence_kind` ⇒ **不得记 pass**。
+            #
+            # 位置：产物对账之后、打检查点**之前** —— 证据不成立就绝不落检查点，
+            # 否则"无效读数"会被当成一次成功提交留在历史里。
+            from .evidence import build_evidence, pass_allowed, summarize, \
+                UNSUBSTANTIATED_KIND
+
+            report.evidence = build_evidence(
+                report.verify, report.deliverables, static_reason=self._static_reason
+            )
+            ev_ok, ev_why = pass_allowed(report.evidence)
+            self._log(f"[evidence] {summarize(report.evidence)}")
+            if not ev_ok:
+                report.error = (
+                    f"pass 缺少机械证据，不记通过：{ev_why}"
+                    "（P17：pass 必须带 checked_by + evidence_kind；"
+                    "没有执行记录 / 输出根内产物 / 可复核理由时不得记 pass）"
+                )
+                report.enter(CyclePhase.FAILED)
+                self._log(f"[evidence] 拒绝 pass：{report.error[:200]}")
+                self._end_cycle(report, cycle_id, goal, "failed",
+                                UNSUBSTANTIATED_KIND, attempt)
+                if attempt < self.max_attempts:
+                    self._rollback_after_confirm(base_ref, report, goal)
+                continue
+
             report.enter(CyclePhase.RECORD)
             # 成功即重置连续失败计数，避免多次成功的尝试被历史失败拖累
             self._consecutive_failures = 0
@@ -587,16 +829,275 @@ class CodingCycle:
             report.error = None
             report.rolled_back = False
             self._log(f"[record] 检查点={report.commit} 文件={len(touched)}")
-            self._emit("cycle_end", cycle_id, goal=goal, status="passed",
-                       commit=report.commit or "", attempt=attempt)
+            self._end_cycle(report, cycle_id, goal, "passed", "verified", attempt,
+                            commit=report.commit or "")
             self._emit_snapshot(cycle_id, goal)
+            # ★ C1/C2：收尾自述 + 机械事实交叉核对（**不改判定**，只加事实）
+            await self._finish_self_report(report, memory, goal)
             return report, memory
 
         self._log(f"\n[结果] cycle 未通过校验: {report.error}")
+        # ★ 终局也要有 `cycle_end` 事件：原来这条路径**一个结束事件都不发**，
+        # 于是"跑满尝试次数仍失败"在事件流里看不出结尾 —— 结局四值无处安放。
+        if not report.outcome:
+            self._end_cycle(report, cycle_id, goal, "failed",
+                            report.outcome_kind or "stalled", report.attempts)
         self._emit_snapshot(cycle_id, goal)
+        await self._finish_self_report(
+            report, memory if memory is not None else SharedMemory(goal=goal), goal
+        )
         return report, memory if memory is not None else SharedMemory(goal=goal)
 
     # ---------- 内部 ----------
+    #: ③ 拆解合规关卡的模式：`off` / `warn`（默认，只留痕）/ `block`（否决）。
+    #:
+    #: **为什么默认不是 `block`**（如实声明，不默默处理）：统筹方自己说
+    #: 「P3 的阈值可能要等**能力基线**出来后再校准 —— 我会同步」。
+    #: 而 7B 现阶段的分解**几乎必然违反** P3/P6（实测 Run A/B 都违反），
+    #: 默认 block 会让每次运行都失败/abstain —— 那不是"严格"，是把门禁变成
+    #: 一句"什么都不能做"。**否决权已经实现并有用例**（`DECOMPOSE_GATE=block`
+    #: 一行开启），请统筹方一句话让我改默认值。
+    DECOMPOSE_GATE_DEFAULT = "warn"
+
+    def _decompose_gate_mode(self) -> str:
+        import os as _os
+        mode = (_os.environ.get("DECOMPOSE_GATE") or self.DECOMPOSE_GATE_DEFAULT).strip().lower()
+        return mode if mode in ("off", "warn", "block") else self.DECOMPOSE_GATE_DEFAULT
+
+    async def _review_decomposition(self, report: CycleReport, cycle_id: str, goal: str,
+                                    orch_result, declared: list) -> bool:
+        """审这一轮的拆解并留痕。返回"是否被否决"（`block` 模式下才可能 True）。"""
+        from .decompose_review import from_cycle_plan, review_decomposition
+
+        mode = self._decompose_gate_mode()
+        tasks = [
+            {"id": r.task.id, "description": r.task.description,
+             "expected_output": r.task.expected_output}
+            for r in (getattr(orch_result, "memory", None).records or [])
+        ] if getattr(orch_result, "memory", None) else []
+        review = review_decomposition(
+            from_cycle_plan(goal, declared, tasks)
+        )
+        review["gate_mode"] = mode
+        report.decompose_review = review
+        self._emit(
+            "decompose_review", cycle_id, goal=goal,
+            passed=bool(review.get("passed")),
+            # ★ P8：**模式必须显式**。warn 模式下 passed=False
+            # 不影响运行通过，不写清模式就会读成
+            # 「审查未通过」与「运行通过」并存。
+            mode=mode,
+            applied=bool(mode == "block"),
+            violated=list(review.get("violated") or []),
+            undecidable=list(review.get("undecidable") or []),
+            principles=list(review.get("principles") or [])[:8],
+            checked_by=str(review.get("checked_by") or ""),
+            independent=bool(review.get("independent")),
+            summary=str(review.get("summary") or "")[:400],
+        )
+        self._log(f"[decompose] {review.get('summary')}")
+        if not review.get("passed") and mode == "block":
+            report.error = (
+                f"拆解合规审查**否决**（机械层）：违反 {review.get('violated')} —— "
+                f"{review.get('summary')}。要求：重新拆解，或声明做不到（abstain）；"
+                "**不得**通过改判据来通过。"
+            )
+            return True
+        return False
+
+    def _check_outcome_kind(self, check: dict) -> str:
+        """check 阶段失败的**原因种类** —— 决定结局是 `fail` 还是 `invalid`。
+
+        分界线（P1）：**交付物自己坏了 → fail（算模型头上）；
+        判据自己坏了 / 环境缺东西 → invalid（这次读数无效）**。
+        复用性违规（含"手写架构文档")属"交付物自己坏了" → `reuse-violation`。
+        """
+        kinds = set(((check.get("reuse") or {}).get("blocking_kinds") or []))
+        if kinds:
+            return "reuse-violation"
+        return "code-broken"
+
+    def _no_verify_kind(self, memory: SharedMemory) -> str:
+        """没有任何验证结论时的原因种类（P1-a）。
+
+        * 判据全被拒（自拟判据不合格 / 换判据没给理由）→ **abstain**：
+          说不出"什么叫对"，不该记成"模型不行"；
+        * 有命令却没执行（接线坏了）→ **invalid**：这次读数无效；
+        * 压根没判据 → **abstain**。
+        """
+        if getattr(memory, "verify_untrusted", ""):
+            return "no-admissible-criterion"
+        return "no-criterion"
+
+    def _end_cycle(self, report: CycleReport, cycle_id: str, goal: str,
+                   status: str, kind: str, attempt: int,
+                   error: str = "", commit: str = "") -> None:
+        """统一的**循环结束出口**：落实结局四值 + 发 `cycle_end`。
+
+        为什么收成一个方法：结局是"这次读数是什么"，**必须在每个出口都被显式设置** ——
+        散在七八处的 `report.error = ...` 旁边各写一行，迟早漏一处，
+        而漏掉的那处会静默退回默认值（本项目对"声明了没接上"已经吃过大亏）。
+        """
+        from .outcome import build_verdict, outcome_of
+
+        if kind:
+            report.outcome_kind = kind
+        report.outcome = outcome_of(report.outcome_kind)
+        reason = error or report.error or ""
+        report.outcome_reason = str(reason)[:400]
+        report.verdict = build_verdict(report.outcome_kind, reason, report.verify)
+        # ★ P17：**每个出口都带证据面**（pass 出口已由 build_evidence + pass_allowed
+        # 先判过）。这里补齐非 pass 出口，让"这次靠什么"在报告与事件里始终可读。
+        if report.evidence is None:
+            from .evidence import build_evidence
+
+            report.evidence = build_evidence(
+                report.verify, report.deliverables, static_reason=self._static_reason
+            )
+        self._emit("cycle_end", cycle_id, goal=goal, status=status,
+                   error=error, outcome=report.outcome,
+                   outcome_reason=report.outcome_reason, attempt=attempt,
+                   commit=commit,
+                   # P17：pass 靠什么 —— 前端/统筹方一眼可读，不必猜
+                   checked_by=str(report.evidence.get("checked_by") or ""),
+                   evidence_kind=str(report.evidence.get("evidence_kind") or ""),
+                   evidence=report.evidence)
+
+    def _machine_facts(self, report: CycleReport, memory: SharedMemory) -> dict:
+        """本次运行的**机械事实**（C2 的对照基准）。
+
+        只放"程序测出来的东西"：磁盘上有什么、verify 结论、check 三段态、lint 结果。
+        模型自述里的任何东西都**不进这里** —— 否则核对就成了自证。
+        """
+        import os as _os
+
+        man = report.manifest or {}
+        disk: list[str] = []
+        scan_root = runtime.effective_root()
+        try:
+            for root, dirs, files in _os.walk(scan_root):
+                dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+                for f in files:
+                    rel = _os.path.relpath(_os.path.join(root, f), scan_root)
+                    disk.append(rel.replace("\\", "/"))
+        except OSError:
+            disk = []
+        lint_failed: list[str] = []
+        for step in report.check_steps or []:
+            if step.get("tool") == "run_lint" and step.get("status") == "failed":
+                parsed = step.get("parsed") or {}
+                issues = parsed.get("issues") or []
+                detail = ", ".join(
+                    f"{i.get('code') or i.get('rule') or ''} {i.get('message') or ''}".strip()
+                    for i in issues[:3]
+                )
+                lint_failed.append(f"{step.get('file')}: {detail or 'lint failed'}")
+        return {
+            "phase": report.phase.value,
+            "workspace_files": sorted(set(disk)),
+            "touched_files": list(report.touched_files or []),
+            # ★ P14：交付物对账的**实际产物**（{path, sha256, size}）也进机械事实
+            "deliverables": report.deliverables,
+            "manifest_actual": [a.get("path") for a in (man.get("actual") or [])
+                                if a.get("path")],
+            "manifest_declared": [d.get("path") for d in (man.get("declared") or [])
+                                  if d.get("path")],
+            "verify": report.verify,
+            "check": report.check or {},
+            "lint_failed": lint_failed,
+        }
+
+    async def _finish_self_report(
+        self, report: CycleReport, memory: SharedMemory, goal: str
+    ) -> None:
+        """收尾自述（C1）+ 与机械事实交叉核对（C2）。
+
+        三条纪律：
+        1. **不改判定**。它是报告，不是门禁：`phase` / `verify` / `commit` 一个都不动。
+        2. **失败必须显式**。拿不到自述就记 `ok=false` + `error`，**不静默**、也不编造。
+        3. **自述不是判据**。`fact_check` 只标矛盾，不因此改 phase
+           —— 唯一例外是它自己的失败（那只是这一段的失败）。
+        """
+        from .prompts import SELF_REPORT_SYSTEM
+        from .self_report import fact_check, normalize
+
+        facts = self._machine_facts(report, memory)
+        entry: dict = {"ok": False, "error": "", "facts": facts}
+        # 给模型的输入：**事实**，不是记忆。结构化上下文已在 memory 里，
+        # 这里按"目标 / 交付物 / 验证 / 检查 / 任务清单"四段铺开，尽量短。
+        lines = [
+            f"目标: {goal}",
+            f"最终阶段: {report.phase.value}",
+            f"尝试次数: {report.attempts}",
+            "",
+            "【磁盘上的文件】",
+        ]
+        lines += [f"  - {p}" for p in facts["workspace_files"][:40]] or ["  (空)"]
+        lines += ["", "【计划声明的交付物】"]
+        lines += [f"  - {p}" for p in facts["manifest_declared"]] or ["  (未声明)"]
+        lines += ["", "【本轮真正写过的文件】"]
+        lines += [f"  - {p}" for p in facts["touched_files"]] or ["  (没有)"]
+        lines += [
+            "",
+            "【验证】",
+            f"  verify: {facts['verify'] if facts['verify'] is not None else '（本轮没有验证结论）'}",
+            "",
+            "【程序检查】",
+            f"  check: {facts['check']}",
+        ]
+        lines += [f"  lint failed: {x}" for x in facts["lint_failed"]] or \
+                 ["  lint failed: 无"]
+        lines += ["", "【任务与结果（模型自述，未经校验）】"]
+        for rec in memory.records[:10]:
+            lines.append(
+                f"  - {rec.task.id}: {rec.task.description[:80]} "
+                f"-> ok={bool(rec.result.ok)} {str(rec.result.output or '')[:80]}"
+            )
+        if report.error:
+            lines += ["", f"【失败原因】{report.error[:400]}"]
+
+        try:
+            llm = getattr(self.orchestrator, "llm", None)
+            if llm is None:
+                raise RuntimeError("没有可用的 LLM（编排器未配置），无法生成自述")
+            data = await llm.chat_json([
+                {"role": "system", "content": SELF_REPORT_SYSTEM},
+                {"role": "user", "content": "<facts>\n" + "\n".join(lines) + "\n</facts>"},
+            ])
+            if isinstance(data, dict) and data.get("_parse_failed"):
+                raise RuntimeError("模型输出不是合法 JSON")
+            entry.update(normalize(data))
+            entry["ok"] = True
+            entry["fact_check"] = fact_check(entry, facts)
+        except Exception as e:  # noqa: BLE001 —— 自述是**报告**，绝不能让 cycle 失败
+            entry["ok"] = False
+            entry["error"] = f"{type(e).__name__}: {e}"[:300]
+            entry["fact_check"] = fact_check(entry, facts)
+            self._log(f"[self_report] 生成失败（不影响本轮判定）: {entry['error']}")
+
+        report.self_report = entry
+        fc = entry.get("fact_check") or {}
+        self._log(
+            f"[self_report] ok={entry['ok']} done={len(entry.get('done') or [])} "
+            f"not_done={len(entry.get('not_done') or [])} "
+            f"矛盾={len(fc.get('contradictions') or [])} "
+            f"未提及={len(fc.get('unmentioned') or [])}"
+        )
+        self._emit(
+            "self_report", report.cycle_id, goal=goal,
+            ok=bool(entry.get("ok")),
+            phase=report.phase.value,
+            done=list(entry.get("done") or [])[:10],
+            not_done=list(entry.get("not_done") or [])[:10],
+            why=list(entry.get("why") or [])[:5],
+            reflections=list(entry.get("reflections") or [])[:5],
+            approach=list(entry.get("approach") or [])[:5],
+            confidence=entry.get("confidence") or {},
+            open_questions=list(entry.get("open_questions") or [])[:5],
+            fact_check=fc,
+            error=str(entry.get("error") or "")[:300],
+        )
+
     def _setup_orchestrator(self, verify_command: VerifyCommand | None) -> Orchestrator:
         """把验证命令和流水线交给主循环，让它在循环内做验证回流。
 
@@ -676,15 +1177,17 @@ class CodingCycle:
             self._log(f"[compress] 结构化上下文构建失败（已忽略）: {e}")
             return "", ""
 
-    # 本次 cycle 之前 workspace 里已存在的文件；用于区分「目标文件」与历史文件
+    # 本次 cycle 之前根目录里已存在的文件；用于区分「目标文件」与历史文件
     def _snapshot_prior_files(self) -> None:
+        """★ P15：快照的根 = `runtime.effective_root()`（设了目标项目根就用它）。"""
+        base = runtime.effective_root()
         files: list[str] = []
-        for root, dirs, names in os.walk(WORKSPACE_DIR):
+        for root, dirs, names in os.walk(base):
             dirs[:] = [d for d in dirs if d not in ("_tmp", "_debug", "__pycache__", ".git")]
             for n in names:
                 if n.endswith(".pyc") or n == ".gitignore":
                     continue
-                rel = os.path.relpath(os.path.join(root, n), WORKSPACE_DIR).replace("\\", "/")
+                rel = os.path.relpath(os.path.join(root, n), base).replace("\\", "/")
                 files.append(rel)
         self._prior_files = sorted(files)
 
@@ -752,6 +1255,15 @@ class CodingCycle:
                     reason=str(parsed.get("skipped") or parsed.get("note") or "")[:120],
                     issues=parsed.get("issues") or [],
                 )
+
+    @staticmethod
+    def _deliverable_error_text(deliverables: dict) -> str:
+        """把交付物对账的缺口转成一句可执行的重试提示（P14）。"""
+        parts = []
+        for v in (deliverables.get("violations") or [])[:3]:
+            parts.append(str(v.get("message") or v.get("kind") or ""))
+        head = "；".join(p for p in parts if p) or "交付物声明未通过"
+        return f"交付物对账不通过: {head}"
 
     @staticmethod
     def _manifest_error_text(manifest) -> str:

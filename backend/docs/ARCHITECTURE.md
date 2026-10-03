@@ -1,6 +1,6 @@
 # 架构说明
 
-> **同步至 CHANGELOG §34** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 本文说明**分层与为什么这么分**。流程契约细节见 `CYCLE.md`；
 > 逐模块签名见 `docs/MODULES.md`；运维操作见 `docs/OPERATIONS.md`。

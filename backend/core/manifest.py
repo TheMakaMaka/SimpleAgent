@@ -272,15 +272,41 @@ def check_manifest(
             available = present | method_names
             missing = [s for s in d.symbols if s not in available]
             if missing:
-                manifest.violations.append({
-                    "severity": "error",
-                    "kind": "symbol-missing",
-                    "path": d.path,
-                    "missing": missing,
-                    "available": sorted(available),
-                    "message": f"{d.path} 缺少声明的符号: {', '.join(missing)}",
-                    "fix": f"在 {d.path} 中实现: {', '.join(missing)}",
-                })
+                # ★ P7 要求 2：「真没有」与「有但我没索引到」必须能区分。
+                # 后者是**索引缺口**（例如模块级赋值一度不被收），
+                # 把它当"缺符号"会让交付物**假失败**。所以先做一次**原始扫描兜底**：
+                # 名字确实在模块级被绑定 → 只记 warning（并明说这是索引缺口），
+                # 不记 error、不拦路。
+                from .symbol_index import raw_module_bindings
+
+                raw = raw_module_bindings(entry.path)
+                unindexed = [s for s in missing if s in raw]
+                really_missing = [s for s in missing if s not in raw]
+                if unindexed:
+                    manifest.violations.append({
+                        "severity": "warning",
+                        "kind": "symbol-unindexed",
+                        "path": d.path,
+                        "missing": unindexed,
+                        "at": f"{d.path}:{raw.get(unindexed[0], 0)}",
+                        "message": (f"{d.path} 里有这些模块级绑定，但**索引里没有**："
+                                    f"{', '.join(unindexed)} —— 这是**索引缺口**（请报 bug），"
+                                    "不是交付缺口"),
+                        "fix": "无需改交付物；请把这条报给上游（symbol_index 的收录范围）",
+                    })
+                if really_missing:
+                    # 要求 3：阻塞判定要带**可复核的位置**（文件:行）
+                    manifest.violations.append({
+                        "severity": "error",
+                        "kind": "symbol-missing",
+                        "path": d.path,
+                        "missing": really_missing,
+                        "available": sorted(available),
+                        "at": f"{d.path}:1",
+                        "message": (f"{d.path} 缺少声明的符号: {', '.join(really_missing)}"
+                                    f"（该文件里没有这些名字的任何模块级绑定）"),
+                        "fix": f"在 {d.path} 中实现: {', '.join(really_missing)}",
+                    })
 
     # ---- 本地模块之间的悬空依赖 ----
     for d in dangling_imports(index):

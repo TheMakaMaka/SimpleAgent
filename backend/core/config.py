@@ -64,7 +64,16 @@ ROLES: dict[str, RoleSpec] = {
     # 以下角色**无内置默认、不继承**。未配置即"未启用"，绝不静默顶替。
     "reviewer": RoleSpec(
         key="REVIEW", name="reviewer",
-        purpose="代码审查（建议性，无自由否决权）",
+        # ★ P5（`TRANSPARENCY2-BACKEND`）：**定位写死为"建议性"**。
+        # 为什么强调：声明为"建议性、无自由否决权"的审查**不能当门禁** ——
+        # 而 ② 需要机械层的硬否决、③ 需要能否决拆解。
+        # 所以**否决权不在这个角色上**：它在**机械关卡**里
+        # （`core/pipeline.py` 的 reuse 段 = ② 的机械层；
+        #   `core/decompose_review.py` = ③ 的拆解关卡）。
+        # 将来若要让模型审查**有否决权**，必须**新增角色**（如 `ARCHITECT`）
+        # 或明确改这里的 purpose —— 那是架构级改动，需用户批准。
+        purpose="代码审查（**建议性，无自由否决权**）；"
+                "有否决权的是机械层关卡（复用性检查 / 拆解合规），不是本角色",
     ),
     "package_optimizer": RoleSpec(
         key="PKGOPT", name="package_optimizer",

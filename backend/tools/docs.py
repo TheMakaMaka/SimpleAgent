@@ -42,9 +42,11 @@ _MAX_FAILURES = 15
             "path": {
                 "type": "string",
                 "description": "相对仓库根的文档路径，如 docs/MODULES.md 或 README.md；留空则列出全部",
+                "default": "",
             }
         },
         "required": [],
+        "additionalProperties": False,
     },
     profiles=("coding",),
 )

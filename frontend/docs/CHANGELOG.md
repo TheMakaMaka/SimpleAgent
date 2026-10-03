@@ -2904,6 +2904,763 @@ CONTRACT_RECORDED_* = recorded_snapshot()[...]     # 兼容旧名，模块加载
 
 ---
 
+## 32. TRANSPARENCY-UI：把「为什么」显示出来 —— ✅ 已落地
+
+**来源**：统筹方 `DISPATCH.md`（2026-09-27 13:0x），契约 **v1.0.24**。
+指令原文：**「本轮是显示层，不改判定逻辑。」**
+验收方式是**打开界面**，用固定样例 `run_20260927_125647_5a3297` 逐条核，
+并明确说：**「不要用'我们自己的测试过了'当作完成依据。」**
+
+### 32.1 起因：一次 `passed` 的运行，判据换了一张考卷
+
+样例的目标是「设计随机障碍物生成规则，**保证起始点与目标点至少可通**，
+写蚁群算法，**连续测试验证**，**生成报告**」→ `status=passed`。而机械事实是：
+没有连通性检查、`ant_colony.py:40` 用了 `np.random.choice` 却没 `import numpy`、
+`test_ant_colony.py` **一次都没被执行**、工作区里**没有报告文件**。
+模型全程 **0 次执行代码**（`tool_call` = `write_file`×5 + `read_file`×1）。
+
+唯一被真跑过的是判据本身，而它是这样变的：
+
+```
+seq 35  (b) 生成障碍物 + 跑蚁群 + 检查报告              → 执行，passed=false
+seq 56  (c) assert generate_obstacles                  → 执行，passed=true
+seq 57  (a) assert obstacle_generator.generate_obstacles((10,10))  → 候选被拒
+seq 74      (c) 被记录为交付判据                        source=model
+```
+
+**(c) 只证明"这个名字能 import 进来"**，它在 (b) 失败之后被换上来，**代码一行没改**。
+而这件事在界面上完全看不见。
+
+> ★ 注意本轮的**顺序纪律**：真实序号是 `(b)@35 → (c)@56 → 被拒的(a)@57 → 记录@74`，
+> **不是**需求文档里为了讲故事而排的 (a)→(b)→(c)。界面**按 seq 原序显示**，
+> 不重排、不改写因果 —— 一重排，"谁在谁之后"这件事就变成了编的。
+
+### 32.2 三条纪律（这一轮真正的交付物）
+
+1. **只显示事件流里真实存在的东西。** 后端没给的字段显示「后端未提供」，
+   或用**实测替代物**顶上并**标明它是替代物**。编一个字，
+   就等于把"判据换了看不见"换个地方再犯一次。
+2. **推断必须标成推断。** 「上一条执行失败了」若是我按 seq 相邻读出来的，
+   就写明"按序号相邻推断"；后端 B1 给出显式 `replaced_command`/`previous_passed`
+   时**另起一行**并注明是后端给的。两种来源**不能同形**。
+3. **缺席也要有归因。** 没有 `self_report` 时显示
+   「本次运行没有收尾自述：该运行的结局词是旧词表 `passed`，后端 C1 交付前这类事件不会产生」。
+   空白面板会被读成"模型没什么要说的"——那是最坏的一种误导。
+
+### 32.3 四块视图
+
+| 块 | 视图 | 数据 | 落在哪 |
+|---|---|---|---|
+| **A2** | 决策依据：每轮 `reasoning` + 「这一轮打算做什么」 | `orchestrator_decision` + `task_start` | `TransparencyPanel` tab 2 |
+| **A3** | 模型回合原话：`task/step` → 说了什么 → 调了什么 → 结果 | `model_reply` + `tool_call` + `tool_result` | tab 3 |
+| **B4** | 验收判据演化：命令 / 结果 / 采纳或拒绝 / 理由 | `verify_probe` + `verify_skipped` + `verify` | tab 1（**默认**） |
+| **C3** | 收尾自述 + `fact_check` 矛盾 | `self_report`（后端 C1） | tab 4 |
+
+- **B4 默认打开**：需求原话说它是"本次最该被看见的东西"，藏在第三个 tab 里等人去找 = 没做。
+- **反面事实挂在标题栏**（不随 tab 隐藏）：`fact_check` 矛盾数、以及"本次没有自述"。
+  需求原话是「放在最显眼处」「不是折叠在角落里」。
+- **"被拒"与"失败"分开**：`rejected` 说的是"这张考卷不该用"，
+  `failed` 说的是"用了，没考过"。混成一个词就看不出这次到底是"判据写错了"还是"模型没做到"。
+- **"是否被最终记录"是另一根轴**（`adopted`），不压进执行结果里。
+
+### 32.4 D3：结局四值 + 判据来源（指令第 5 节的追加项）
+
+样例的 `report.verify.source = model` —— **这次是模型自己给自己判过的**。
+界面现在把它显示在**结论旁**（`VerifyPanel` 的 VERIFY 格 + 透明化条标题栏）：
+
+```
+结局 pass（旧词表）   判据来自 模型自拟
+```
+
+`abstain`（模型声明做不到）/ `invalid`（任务或工装本身有问题）成为一等公民；
+样例的结局词仍是**旧词表** `passed`，界面**如实标出这一点**并写明
+"四值尚未交付，不能从这里读成'这次不是那两种'"。
+
+### 32.5 ★ 机械验证：固定样例 → **真实归约器** → **真实 SSR 渲染**
+
+以前前端只有 `vue-tsc` 与 `vite build`，**两者都不执行归约器、不渲染组件**。
+本轮补上 `frontend/scripts/replay-check.mjs`（`npm run check:transparency`）：
+
+1. 用 esbuild 把 `src/store/run.ts` **就地打包**（不复制逻辑），
+   把固定样例的 77 条事件喂进去，断言四块视图的读数；
+2. 用**同一份 vite 配置**做 SSR 构建，把 `TransparencyPanel.vue` 与
+   `VerifyPanel.vue` 用 `vue/server-renderer` 渲染成 HTML，
+   断言那几行字**真的在 HTML 里** —— "读数对、面板没显示"是最阴的失效。
+
+`tests/unit/test_transparency_ui.py` 把它拉进门禁（缺 node 时按配置分流 SKIP）。
+实测 **45/45**，四条验收各有独立断言。
+
+> 它**不是**人眼验收的替代：排版、折叠、"看不看得懂"仍然只能由人判。
+
+### 32.6 ★ 顺带修掉三处"界面对不上机械事实"
+
+修这一轮的路上撞见的，都属于同一类毛病（**界面说了事实不支持的话**）：
+
+1. **`bridge/hooks.py:74` 把长参数换成"前 6 行 + `…（共 275 字符）`"**，
+   而旧的时间线摘要对**预览串**取 `.length` → 显示"写入 …（**235** 字符）"。
+   真值 275 就写在同一个字符串里。改为优先读事件声明的真值（`store/args.ts`）。
+2. **`TaskPanel.vue` 把编排器的理由标成「主模型推理」**，
+   `run.ts` 的时间线标题写「**主模型**决策 → continue」。
+   事件名就叫 `orchestrator_decision` —— **说错了人**。透明化的第一步是别把人认错。
+3. **"什么都没干"的回合**（`t4` 第 3 步：无文字、无工具调用）与
+   "只调工具"被渲染成同一句"（本轮无文字，直接调用工具）"。两者分开。
+
+**必须记下的过程事故**：我用 PowerShell 5.1 的 `Get-Content -Raw` / `Set-Content`
+往返改 `transparency.ts`，中文被读成 GBK 再写成 UTF-8 + BOM ——
+**文件全毁，而 `vue-tsc` 与构建照样通过**。恢复靠重写整文件。
+因此补了一个廉价门禁（`test_transparency_ui.py` 第 [5] 组）：
+扫 `frontend/src/**/*.{ts,vue}` 的 **BOM** 与 **GBK 乱码特征**（全库命中 0，不误伤）。
+
+### 32.7 ★ 中途发现：上游**已经实装**了后端那一半，但**换了事件名**
+
+做到一半去核对上游，发现 `D:\PythonProject\SimpleAgent2_Cycle` **已经交付了**
+`TRANSPARENCY-BACKEND`（A1 + B1 + C1 + C2），而且**刻意没有**用需求里建议的名字：
+
+| 需求里的建议 | 上游实际发的 | 位置 |
+|---|---|---|
+| `orchestrator_decision`（补 `reasoning`/`intent`） | **`orchestrator_round`**（`reasoning` + `tasks`） | `core/contract.py:172`，`core/coding_cycle.py:394` |
+| 替换类事件带 `replaced_command`/`previous_passed` | **`verify_criterion`**（`action` + `previous_command`/`previous_passed`/`reason`） | `core/contract.py:181`，`core/coding_cycle.py:407` |
+| 加性事件 `self_report` + 报告字段 | **`self_report`**（含 `fact_check` 与 `fact_check.contradictions`） | `core/contract.py:189`，`core/coding_cycle.py:755` |
+
+上游在 `core/contract.py:178-180` 写明了为什么避开 `orchestrator_decision`：
+**那个 kind 由本仓库的 bridge 发（`bridge/hooks.py`），两个生产者发同一个 kind
+会让审计无法判断哪条权威**。两边数据同源（同一个 `_decide` 返回值）。
+**这个判断我认同**，所以界面**两个来源都认**（老运行只有 bridge 那条）。
+
+**由此暴露的接口级缺口（附两处位置）**：
+
+1. **契约主本落后于上游**：三个新事件在上游标的是 `since="1.2"`，而
+   `core/contract.py:57` 的 `CONTRACT_VERSION` 仍写着 `"1.1"`；
+   契约主本（`01-contract/interface-contract.json`，v1.0.24）里也没有它们
+   —— 主本与镜像我核对过 SHA256，**逐字节一致**，所以不是镜像陈旧。
+   实测（真上游，标定前）：`/api/spec` 报
+   `uncalibrated_events=[orchestrator_round, self_report, verify_criterion]`。
+2. **`verify_skipped` 的 `command` 恒为空**（那条被拒的判据只在 `reason` 文本里）：
+   上游有**两个**发 `verify_skipped` 的地方 —— `core/coding_cycle.py:379`（未注入 pipeline）
+   带 `command`，而 `:384`（**自拟判据被拒**）**硬编码 `command=""`**。
+   固定样例里那条 `seq=57` 就是后者，所以它的命令只出现在 `reason` 里。
+   界面因此显示"该事件未单独记录命令"，而不是去 `reason` 里猜一个命令出来。
+
+**处理方式**（不放宽任何门禁）：
+
+- 给三个事件**补 `/api/spec` 校准**（与 `verify_skipped` 那次同一动作）；
+- **不写 `case`**，改为采集器用 `RECOGNIZED_KINDS` **声明**词表
+  （声明就是 `HANDLERS` 的键，代码真的在用）；`test_event_contract.py` 的
+  "前端认得的词"改判为 `case ∪ 声明`；
+- 对"自带旧副本"那种配置，给三个名字一条**有到期条件的豁免**：
+  逐名去**参考上游的 `core/contract.py`** 里核实 `EventSpec` 真的存在
+  （核不到就 FAIL），并在契约同步后删除。
+
+### 32.8 未做 / 依赖后端
+
+- **D1（结局四值 `pass/fail/abstain/invalid`）没有交付**：上游
+  `CONTRACT_VERSION` 仍是 `1.1`，全仓库 grep 不到 `abstain`/`invalid`。
+  所以界面上"旧词表"提示是**如实的**，不是保守：现在的词表里确实
+  **没有**"模型声明做不到"与"任务本身有问题"这两个位置。
+- **C3 的自述文本只能是夹具**：`self_report` 由模型产生，我离线造不出真模型的话。
+  所以 `tests/diagnostics/make_transparency_fixture.py` 用
+  **上游自己的 `core.self_report.fact_check()`** 去核对一份明写的夹具自述
+  （机械事实取自固定样例的 `meta.json`）—— "矛盾能不能被检出来"由**后端代码**
+  判定，不由我判定。**真跑一次带 `self_report` 的运行仍然没有做。**
+- **多 attempt 运行未构造**：判据列表是**一条按 seq 的平铺序列**（事件流本身的结构），
+  跨 attempt 的"上一条失败"已被阻断（只在同一次尝试内陈述），但没有真实多 attempt 样例可验。
+- **`relaxed` 结局没有位置**：`bridge/spec.py:305` 的状态词表里有 `relaxed`
+  （人工放宽），它既不是 `pass` 也不是 `fail`。D1 的四值没有覆盖它 ——
+  界面把它显示成"未产出结局"，**不替它归类**。
+
+### 32.9 ★ 契约滞后：**按方向分流**，并让三处"永远是红的"检查回到可读状态
+
+把上游拿出来真跑之后，**六个门禁红了**，红的全是同一件事：
+`test_partition`（6 项）/ `test_audit`（1 项）/ `doctor`（2 项）都在说
+「实测与契约不一致：**多** `orchestrator_round` / `self_report` / `verify_criterion`」。
+
+**这不是实现错，方向是"契约主本落后于上游"**（见 §32.7）。
+但"不一致就 FAIL"这条判据**分不出两个方向**：
+
+| 现象 | 含义 | 该怎么判 |
+|---|---|---|
+| 契约有、实测**没有** | 上游**删了**它承诺过的东西 | **真回归** → FAIL |
+| 实测有、契约**没有** | 上游**加性**新增，主本该跟上来 | **契约滞后** → 说清楚，不是实现错 |
+
+只判第一个方向，第二种就会让门禁**永远红着** —— 而"永远红着"的检查等于没有检查
+（`bridge/partition.py` 的模块注释与 `doctor.py` 的 bundled→WARN 是同一条纪律）。
+
+**改法**：`bridge/partition.py` 新增 `CONTRACT_LAG_KINDS`（**逐个列名**，不是"凡是多出来的都放过"）：
+
+- `check_against_contract()` 现在分开算 `extra` / `missing`：
+  `missing` 或 `extra` 里**没登记**的 → 照旧 FAIL；
+  已登记的滞后 → 记进 `contract_lag`，并且**总数期望值按「契约 + 滞后」比**。
+- `/api/spec` 的 `diagnostics` 新增 `contract_lag` + `contract_lag_note` ——
+  **必须显示出来**，否则"实测与契约不一致"没人看得见。
+- `test_partition.py` / `test_audit.py` / `check_contract_report.py` 的期望值改为
+  **从 `CONTRACT_LAG_KINDS` 推导**，不再写死 12/13/34（§31.3 的同一个教训，
+  这次是镜像落后而不是我的常数落后）。
+- 关键：**反向仍然会红**。实测负向：把 `invented_event` 塞进推导 →
+  `★ 事件分区错了自检会红` 立刻报
+  「多 `['invented_event']` 少 `[]`（另有已登记滞后 …）」。
+- `doctor.py` 的「无死标定」与「前端无孤儿 case」在 **bundled** 配置下降级为
+  `WARN` 并写明理由（标定为契约的新上游备着），指向真上游时照旧 `FAIL`。
+
+### 32.10 ★ 顺手修掉的两件事（都是被门禁抓出来的）
+
+1. **`/api/audit` 的"前端认得什么"少算 3 个**：
+   `frontend/src/generated/expectations.ts` 与 `bridge/spec.frontend_event_kinds()`
+   都只扫 `store/run.ts` 的 `case`，而本轮三个新事件由采集器的 `RECOGNIZED_KINDS` 声明。
+   后果不是"少显示"，是**审查会说错话**（把"前端早就认得"报成"前端没跟上"）。
+   两处都改成 `case ∪ 采集器声明`。
+   实测（真上游，用真实 `expectations.ts` 驱动审计）：`verdict = ok`。
+2. **从仓库根跑夹具脚本会在仓库根留下 `workspace/`**：
+   `tests/diagnostics/make_transparency_fixture.py` 起初没切 CWD 就
+   `import core`（上游的相对路径是 CWD 相对的，`core/__init__.py` 连带 import 的模块会建目录）。
+   **`tests/unit/test_isolation.py` 当场地报了 `FAIL 仓库根无 workspace/`** ——
+   这是本仓库第二次出现"来路不明的仓库根 `workspace/`"（上一次没能复现，
+   现在有了机制解释）。修法是 import 前切到运行根（与 `tests/_bootstrap.py` 同一条判据）。
+   顺带把两次的来源写进 `docs/DIAGNOSTICS.md` §8.3，免得下次再从零查。
+
+### 32.11 验证（最终）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 透明化读数 + 新事件 + 夹具 + 真渲染 | `npm run check:transparency` | **66/66** |
+| 前端单测（含编码门禁 + 夹具来源核对） | `python tests/unit/test_transparency_ui.py` | **50/50** |
+| 事件词表门禁（自带副本 / 真上游） | `python tests/unit/test_event_contract.py` | **21/21** / **30/30** |
+| 三条分区（自带副本 / 真上游） | `python tests/unit/test_partition.py` | **55/55** / **60/60** |
+| 归属自审（自带副本 / 真上游） | `python tests/unit/test_audit.py` | **107/107** / **107/107** |
+| 标定（自带副本 / 真上游） | `python tests/unit/test_spec.py` | **42/42** / **43/43** |
+| 夹具可复现（后端 `fact_check` 重新生成） | `AGENT_UPSTREAM_DIR=… python tests/diagnostics/make_transparency_fixture.py` | **6/6** |
+| 离线全量（两种配置） | `python tests/run_unit.py` | **36/36 文件，exit 0** |
+| 体检（两种配置） | `python scripts/doctor.py` | **失败 0 项**（bundled WARN 10 提示 / 上游 WARN 6 提示） |
+| 目录归属 | `python scripts/layout.py --check` | exit 0 |
+| 前端类型 / 构建 | `npm run typecheck` · `npm run build` | 零错误 / 通过（期望 37 事件） |
+| 备份前验证 | `.\scripts\backup.ps1 -Label v16-transparency-ui` | 单测 36/36 · layout 通过 · typecheck 零错误 · **端到端 17/17** |
+| 机械核对改动清单 | `.\scripts\backup.ps1 -Verify -From 20260927-105719_v15-verify-skipped` | 见九节评估文档 §3 |
+
+---
+
+## 33. TRANSPARENCY2-UI：交付新鲜度、任务面板、结局四值、拆解合规 —— ✅ 已落地
+
+**来源**：统筹方 `DISPATCH.md`（2026-09-27，契约 **v1.0.25**）+ `WORK-ORDER.md` 的 **P1–P4**。
+起因：`REVIEW-20260927-instability.md`（同一条指令两次运行，**14 个任务 vs 19 个**，判据与错误都不同）。
+
+> ★ **先记一条：统筹方主动更正了自己的派单。** 上一轮他们把 A1
+> （`orchestrator_decision` 补 `reasoning`）**派给了后端**，而那个 kind 是本仓库
+> `bridge/` 发的（`bridge/hooks.py:307-310` 早就填了 `reasoning`）。
+> 他们在契约里写了更正并说"**你们做对了**"。这条值得记下来：**派错侧是真实成本**
+> （我这一轮为它多花了一整轮核对）。
+
+### 33.1 【P1】🔴 `dist` 陈旧 —— 用户看到的不是交付的那一版
+
+**统筹方实测**（`deploy-freshness.py`，重新构建后逐文件比对，不看 mtime）：
+
+```
+服务的 js        = index-BcJOtip4.js
+当前源码重新构建 = index-BazGZyJn.js      ← FRESHNESS state = fail
+```
+
+**根因（两个时间点，已查明）**：
+
+| 时刻 | 事件 |
+|---|---|
+| **13:43:17** | `dist/index.html` 被构建（当时的 `gen-expectations.mjs` 还是旧的） |
+| **13:43:42** | 我把 `gen-expectations.mjs` 改成"前端词表 = `case` ∪ 采集器声明" |
+| 13:49 / 13:52 | 两次备份的 preflight 只跑 `npm run typecheck`（它**只重新生成**
+`src/generated/expectations.ts`），**没有重建 dist** |
+
+于是交付物里的那份 JS **永远是 34 个事件**，而源码里已经是 37 个：
+**改过的东西，不一定就是交付的东西。** 逐字节确认：旧产物里没有
+`orchestrator_round` / `self_report` / `verify_criterion` 三个串，新产物里有。
+
+**修法（三层，避免只靠"下次注意"）**：
+
+1. **`scripts/freshness.py`**（新）：不看 mtime，**真的用当前源码构建到临时目录**，
+   再逐文件比 `index.html` 引用的资源名与内容哈希 —— 与统筹方同一条判据，但离线可跑。
+   `--fix` 直接重建；`--dist <dir>` 供负向测试。
+2. **`tests/unit/test_dist_freshness.py`**（新，进全量门禁）：正向 `state=ok`；
+   **负向**把 dist 里的 JS 追加一个字节 → 必须报「同名但内容不同」
+   （这才是"门禁不是永远绿"的证据）。
+3. **`backup.ps1` 的 preflight 增加"交付新鲜度"一项** —— 因为**根因就在这个函数里**：
+   它跑 typecheck（会改生成物）却从不重建 dist，然后一起打快照，正好把两者分了家。
+   现在 dist 陈旧就**不让备份通过**。
+
+**交付产物哈希**（本版）：`index-Bu5N1N67.js` sha256:`d30297e6f3e7e769` ·
+`index-yo24bi27.css` sha256:`f68c3a6352e41d3f`（`python scripts/freshness.py` 可复现）。
+
+### 33.2 【P2】任务面板：任务一多就失去可视化价值
+
+用户原话：「右上角的每一个任务状态，这个设计不错，但是**太多了就会压缩，也不会自动滚动**，
+完全失去可视化价值。」**实测那两次运行是 14 与 19 个任务**（统筹方说 10/11，
+按 `task_start` 数实际更多；`run_20260927_225939_f4daaa` 里 `t9` 还出现了**两次**）。
+
+**统筹方猜的那一行是对的，但只说了一半。** 他们指出 `.task` 缺 `flex-shrink: 0`；
+我去核实，机制确实如他们所说 —— 在有界高度的 flex 列里子项默认 `flex-shrink: 1`，
+**先压缩、永不溢出**，所以 `overflow-y: auto` 永远不生效：**同一个机制解释了两句话**。
+
+但只加 `flex-shrink` 还不够，另外三条要真做到：
+
+| # | 要求 | 落点 |
+|---|---|---|
+| 1 | 不压缩 | `.task { flex: 0 0 auto }` + `min-height: 46px` |
+| 2 | 可滚动 | `.tasks { max-height: 44vh }` + `.tasks__body { overflow-y: auto }` |
+| 3 | 当前项自动在视野内（**手动滚过则不抢**） | `store/tasklist.ts` 的 `FollowMode` |
+| 4 | 量大时降级可读 | `taskRows()` 折叠已完成，**当前项与失败项永远可见** |
+
+**抽出纯函数**（`frontend/src/store/tasklist.ts`）是关键：`taskRows()` 的分组与
+`shouldAutoFollow()`/`modeAfterScroll()` 的跟随决策都能**机械断言**，
+不必靠人在浏览器里点。
+
+**过程中被自己的断言抓住的两个坑**：
+
+1. **任务 id 会重复**（实测 `t9` 出现两次）→ `:key` 只写 id 会让 Vue 复用错节点，
+   而这类错误**只在运行时报 warning**，构建与类型检查都看不出来。key 改成带下标。
+2. **"当前项永远可见"在运行结束时恰好失效**：跑完之后当前项状态也是 `done`，
+   按状态分它就该进折叠区 —— 而那正是人回头看的时候。
+   所以 `taskRows()` 增加 `keepIndex`：按**下标**把当前项钉住，不参与折叠。
+
+### 33.3 【P3】结局四值 + 判据来源 + 审查独立性
+
+契约 v1.0.25 之后，上游已经交付 `core/outcome.py`（`OUTCOMES = (pass, fail, abstain, invalid)`）
+与 `build_verdict()`。所以这一轮我**不猜形状**，字段名照抄实现：
+
+| 要显示 | 字段（照抄） | 位置 |
+|---|---|---|
+| 四值 | `outcome`（`+ outcome_kind`） | `core/outcome.py:89-104` |
+| 判据来源 | `criterion_source`（caller/model）+ `criterion_trust` | 同上 |
+| **是否独立** | `criterion_independent` | 同上（`core/outcome.py:102`） |
+
+**通路做了两条，缺一不可**：
+
+1. **`run_end` 事件带上这一组字段**（`bridge/runner.py` 的 `_verdict_of()`）——
+   界面是事件驱动的，只放进报告就会出现"**实时看得到、回放看不到**"这种最难查的差异；
+2. **报告那条路**（`GET /api/runs/{id}` 的 `run.report` → `store.ingestReportInfo()`）——
+   **旧运行的事件里没有 verdict，只有报告里有**；拆解合规审查现在也只在报告里。
+
+**三处刻意的"不猜"**：
+
+- `criterion_independent` **缺失** → 显示「未给（判不了）」，**不是**「非独立」。
+  `null` 与 `false` 是两件事：一个是"没给"，一个是"给了，且不独立"。
+- 后端**没产出** verdict → 显示「后端没有产出结局四值」，**不拿 `run_end.status`
+  硬套一个四值**（那等于替后端下一个它没下的判断）。兜底推导值另起一行、标明是推的。
+- 结局词不在四值里 → 显示**原词** + `unknown`，不硬塞成 `fail`。
+
+**踩过的一个真坑（已修，记下来）**：`readVerdict` 起初按"对象有没有键"判存在。
+调用方若先拼一个固定键的壳（`{outcome: ev.outcome, …}`）再传进来，
+`Object.keys` 一定是满的 → 返回一个 `raw=''` 的"verdict"，
+**把「后端没产出」伪装成「产出了但认不出」**，旧运行的结局就这么被擦掉了。
+现在判据是"**有键但全空 = 没有**"（`transparency.ts` 的 `readVerdict`）。
+
+### 33.4 【P4】③ 拆解合规审查：`violated` 与 `undecidable` 分开
+
+上游 `core/contract.py:207` 声明了 `decompose_review`（`since="1.3"`），
+形状 `{principle, verdict: violated|ok|undecidable, evidence, checked_by, independent}`。
+**但它还没有发出**（全仓 `_emit("decompose_review"…)` 一处都没有，只有 EventSpec + 报告键），
+所以界面必须**两态都能显示**：有就逐条显示，没有就明说「后端尚未产出」——
+**绝不画一个绿色的"审查通过"**。
+
+三条硬规矩落到了代码里：
+
+1. `undecidable` **与 `violated` 分两块**（颜色与措辞都不同：红「违反（要改）」/
+   琥珀「判不了（审查范围不完整，既不是通过也不是违反）」）；
+2. **`passed=true` 不足以**把这页画绿 —— 契约原话：「`passed` 只代表**机械条款**通过，
+   `undecidable` 非空说明审查范围不完整，**不得**呈现为『审查通过』」；
+3. 认不出的 `verdict` 值**留空**，**不归到 `ok`**。
+
+顺带把上游另一个新事件 **`reuse`**（机械层复用性检查，**有否决权**）也标定 + 渲染了 ——
+它是**真在发**的（`core/coding_cycle.py:507`），不认下 `/api/spec` 就会报未标定。
+
+### 33.5 契约 v1.0.25 同步：`CONTRACT_LAG_KINDS` 到期，已验证删除
+
+上一轮我登记的滞后项（`orchestrator_round` / `verify_criterion` / `self_report`）
+**契约已经声明**（13 → 16，分区 34 → 37），所以那三个名字**按到期条件删掉了**。
+这一轮上游又加了两个（`reuse` / `decompose_review`，都标 `since="1.3"`），
+所以同一张表换成这两个名字 —— **机制不变，只是内容换了**。
+
+### 33.6 验证
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 透明化 + 新事件 + 夹具 + 真渲染（含 P2/P3/P4） | `npm run check:transparency` | **108/108** |
+| 交付新鲜度（正向 + **负向**） | `python scripts/freshness.py` · `python tests/unit/test_dist_freshness.py` | `state=ok` · **6/6** |
+| 前端单测 | `python tests/unit/test_transparency_ui.py` | 见 `docs/VERSIONS.md` 该版记录 |
+| 离线全量（两种配置） | `python tests/run_unit.py` | **exit 0**（见评估文档 §4） |
+| 事件词表（自带副本 / 真上游） | `python tests/unit/test_event_contract.py` | 见评估文档 §4 |
+| 体检（两种配置） | `python scripts/doctor.py` | 失败 0 项 |
+| 目录归属 | `python scripts/layout.py --check` | exit 0 |
+| `.ps1` BOM（改完必跑） | `python scripts/fix_bom.py` · `python tests/unit/test_ps1_encoding.py` | 12/12 |
+| 备份前验证 | `.\scripts\backup.ps1 -Label v17-transparency2-ui` | 见 `docs/VERSIONS.md` |
+| 机械核对改动清单 | `.\scripts\backup.ps1 -Verify -From 20260927-134929_v16-transparency-ui` | 见九节评估文档 §3 |
+
+---
+
+## 34. 【P5 · 阻塞】挂钩包装器镜像签名 —— **系统跑不起来** —— ✅ 已落地
+
+**来源**：统筹方 `DISPATCH.md` 追加项（P5）。**症状**：
+
+```
+TypeError: install.<locals>._run_verify() takes 2 positional arguments but 3 were given
+```
+
+### 34.1 根因：D9 的教训**只学到了一处**
+
+上游 v1.23 给 `run_verify` 加了一个**可选参数**（加性、向后兼容）：
+
+| 位置 | 形态 |
+|---|---|
+| `D:\PythonProject\SimpleAgent2_Cycle\core\pipeline.py:361` | `async def run_verify(self, command: VerifyCommand, files: list[str] \| None = None)` |
+| `D:\PythonProject\SimpleAgent2_Cycle\core\orchestrator.py:246` | `vr = await self.pipeline.run_verify(vc, files)` ← **两个位置参数** |
+| `bridge/hooks.py:392`（旧） | `async def _run_verify(self, command):` ← **镜像了旧签名** |
+
+于是**每一次运行在 ~6 秒内失败，验证整条链停摆**。而我们的单测**全绿** ——
+因为这个包装器不在测试范围内。
+
+**这正是 D9 的同类**：当时 `_emit` 包装器撞名（`got multiple values for argument 'kind'`），
+改成"按上游真实签名绑定"才修好。**那个教训写进了注释，却没有推广到另外九个挂钩点。**
+
+**审计结果（11 个挂钩点，9 个是镜像的）**：
+
+| # | 挂钩点 | 旧写法 | 现在 |
+|---|---|---|---|
+| 1 | `CodingCycle._emit` | ✅ 已是透传（D9 修过） | 工厂 `make_emit_wrapper` |
+| 2 | `CycleReport.enter` | ❌ `_enter(self, phase)` | 透传 |
+| 3 | `CodingCycle.run` | ❌ `_run(self, goal, verify_command=None)` | 透传 |
+| 4 | `CodingCycle._new_file_artifacts` | ❌ `(memory)` | 透传（staticmethod） |
+| 5 | `CheckpointManager.commit` | ❌ `(self, label)` | 透传 |
+| 6 | `CheckpointManager.rollback` | ❌ `(self, ref)` | 透传 |
+| 7 | `Orchestrator._decide` | ❌ `(self, memory)` | 透传 |
+| 8 | `Worker.run` | ❌ `(self, task, context)` | 透传 |
+| 9 | `LLMClient.chat` | ❌ `(self, messages, tools=None, force_json=False)` | 透传 |
+| 10 | `Worker._invoke` | ❌ `(self, name, arguments_json)` | 透传 |
+| 11 | `CheckPipeline.run_verify` | ❌ `(self, command)` ← **本次炸的就是它** | 透传 |
+
+### 34.2 修法：**一个工厂 + 一张名单**，不再手写十个签名
+
+```python
+HOOK_POINTS = ((模块:类, 属性名, 说明, 是否 staticmethod), ...)   # ★ 唯一名单
+
+def bind_arguments(orig, args, kwargs) -> dict   # 按上游真实签名解出参数名（VAR_KEYWORD 展开）
+def make_sync_hook(orig, around, *, label)       # 同步：around(named, call)
+def make_async_hook(orig, around, *, label)      # 异步：async around(named, call) → await call()
+def make_hook(orig, around, *, label)            # ★ 同步/异步用 iscoroutinefunction **问上游**
+```
+
+四条纪律（每条都是被真实事故逼出来的）：
+
+1. **不镜像签名**：包装器就是 `(*args, **kwargs)`，原样 `orig(*args, **kwargs)`；
+2. **同步/异步问上游**：`inspect.iscoroutinefunction(orig)` —— 手写这个判断就是又一份镜像；
+3. **刻意不用 `functools.wraps`**：它会把 `__wrapped__` 指回原方法，于是
+   `inspect.signature(包装器)` 会**报告上游签名**（看着像镜像），而实际能力是"什么都收"。
+   外部工具（含统筹方的 `hook-compat.py`）按签名判断兼容性时，**看到的必须是真相**；
+   所以工厂只手工复制 `__name__/__qualname__/__doc__`，并留
+   `__bridge_hook__`（工厂印记）与 `__wrapped_orig__`（原方法）。
+4. **`install()` 按名单遍历**，不再逐个手写赋值 —— 手写十处 = 十份会漂的镜像。
+
+### 34.3 验收：真的跑一次，并走到 verify
+
+新增 `tests/diagnostics/hook_verify_e2e.py`：把 **worker 换成桩**（直接写一个真文件，
+不调模型），但 **Orchestrator / CheckPipeline / CodingCycle 全是真的** ——
+也就是说**被 P5 打坏的那条链是真跑的**，只有"模型那一层"是桩。
+
+实测（**真上游**）：
+
+```
+  本轮真跑到的挂钩点：8/8
+  PASS  ★ 跑完没有异常（P5 形态会让它在 ~6 秒内抛 TypeError）
+  PASS  ★ 走到了验证：发出 `verify_probe`
+  PASS  ★ 验证真的执行了（`passed=true`）
+  PASS  ★ 事件链完整：run_start → verify_probe → verify → cycle_end
+  PASS  ★ `verify_probe` 带命令原文
+  PASS  ★ 最终 phase 是 `record`（走完了 VERIFY 才可能到 RECORD）
+通过 7/7
+```
+
+**自带旧副本配置下按配置分流 SKIP**（2/2）：那份副本的验证接线在
+`FIX-VERIFY-WIRING` 之前，**本来就走不到 verify** —— 那是副本的问题，不是 bridge 的。
+判据取自上游自己：v1.23+ 的 `run_verify` 才有 `files` 参数。
+
+> **顺带一个实测确认**：这一跑把上一轮的后端事件也带出来了 ——
+> `orchestrator_round` / `verify_criterion` / `decompose_review` / `reuse` / `self_report`
+> 全部出现在事件流里，说明那些挂钩点不只是"装上了"，而是**真的在发**。
+
+### 34.4 门禁：把"签名兼容"变成可执行的断言
+
+新增 `tests/unit/test_hook_compat.py`（自带副本 18/18 · **真上游 21/21**）：
+
+| # | 断言 |
+|---|---|
+| [1] | 名单 11 个 · 名单里的都装上了 · 没偷偷多挂 · 没有"有点没逻辑"的空壳 |
+| [2] | 每个包装器的签名只许是「可选的 `self` + `*args` + `**kwargs`」（`self` 不算镜像） |
+| [3] | 每个包装器**接得住上游真实参数**，**并且多加一个可选参数也接得住**（P5 的形态） |
+| [4] | 同步/异步与上游一致（从上游读）· 每个包装器都带工厂印记 |
+| [5] | 真回归：按上游形态真跑一次 `run_verify`，断言发出 `verify_probe` |
+| [6] | **负向**：手写一个镜像包装器，上面的判据**必须**判它红 |
+
+★ [3]/[6] 成对才有意义：[3] 让"上游加参数"这件事在**装钩子之前**就被发现；
+[6] 证明这条判据不是永远绿。
+
+### 34.5 验证
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 挂钩点兼容（自带副本 / 真上游） | `python tests/unit/test_hook_compat.py` | **18/18** / **21/21** |
+| 真跑一次走到 verify（真上游） | `AGENT_BACKEND_DIR=… python tests/diagnostics/hook_verify_e2e.py` | **7/7**（自带副本 2/2 + SKIP） |
+| `_emit` 透传（D9 的原始防线） | `python tests/unit/test_hooks_passthrough.py` | 见全量 |
+| 离线全量（两种配置） | `python tests/run_unit.py` | **37/37 文件，exit 0** |
+| 体检 / 目录归属 / 新鲜度 | `doctor.py` · `layout.py --check` · `freshness.py` | 失败 0 项 · exit 0 · `state=ok` |
+
+---
+
+## 35. 【P5b · 阻塞】`NameError: name 'Worker' is not defined` —— ✅ 已落地
+
+**来源**：统筹方 `DISPATCH.md`（契约 v1.0.27）。**P5 修完 `TypeError` 之后，
+错误换了一个，仍然是每次运行 ~6 秒必死**：
+
+```
+NameError: name 'Worker' is not defined
+```
+
+### 35.1 根因：函数内 import ≠ 模块全局
+
+| 位置 | 改前 |
+|---|---|
+| `bridge/hooks.py:438`（`_around_invoke` 内） | `args = Worker._parse_args(arguments_json) or {}     # noqa: F821（install 时已 import）` |
+| `bridge/hooks.py:500`（`install()` 内） | `from core.worker import Worker  # noqa: F401` ← **函数内局部 import** |
+
+模块全局里**从来没有** `Worker`（实测 `hasattr(bridge.hooks,'Worker') → False`），
+而 `_around_invoke` 查的就是模块全局 ⇒ 模型**第一次调用工具**的那一刻炸
+（事件序 `task_start → worker_step → model_reply → error → run_end`），**一个文件都没写就结束**。
+
+**★ 而 ruff 早就报了它**：`bridge/hooks.py:438:12: F821 Undefined name 'Worker'`
+—— 被我自己写的那句 `# noqa: F821（install 时已 import）` 压掉了，**理由是错的**。
+
+> **一句 noqa 能让门禁闭嘴，但改不了运行期的事实。**
+
+### 35.2 为什么我的门禁全绿却漏了它（**比 bug 本身更值得记**）
+
+| 门禁 | 为什么放过 |
+|---|---|
+| 全量单测 38/38 | `_around_invoke` 不在任何测试的调用路径上 |
+| `test_hook_compat` [2]/[3] | 只验"**接得住签名**"（结构层），**没有真的调用它** |
+| `hook_verify_e2e.py`（P5 那版） | **我把 worker 换成了桩** ⇒ `Worker.run`/`_invoke`/`LLMClient.chat` 三个挂钩点**被绕过**；我还把这件事**打印成"已声明的局限"**，而不是去关掉它 |
+| `ruff` | **报了**，被 `# noqa` 压掉 |
+
+> **两条教训，都落成了代码**：
+> 1. **noqa 不能替代验证** ⇒ `ruff F821 --ignore-noqa` 成为常驻门禁（判据 G）；
+>    另加一条**不依赖 ruff** 的等价判据：`dis` 扫挂钩体的 `LOAD_GLOBAL`。
+> 2. **把缺口写进"局限"里，不等于评估过它** ⇒ harness 改成**不绕过任何挂钩点**
+>    （只伪造最底层的模型 HTTP 客户端）。
+
+### 35.3 修法（改前 → 改后）
+
+```diff
+- args = Worker._parse_args(arguments_json) or {}     # noqa: F821（install 时已 import）
++ # 走延迟函数（不是模块全局）；解析失败由 `_safe` 兜住 —— 挂钩自己的异常
++ # 绝不能让上游的工具调用失败（这是本模块第一条纪律）。
++ args = _safe(worker_cls()._parse_args, arguments_json) or {}
+```
+
+新增延迟取类（`bootstrap.install()` 之后才可 import 上游）：
+
+```python
+def worker_cls():
+    from core.worker import Worker
+    return Worker
+```
+
+并删掉 `install()` 里那句造成误解的局部 import 与我写的错误 `# noqa`。
+**顺带把这次解析纳入 `_safe`** —— 挂钩自己的异常不许拖垮上游的工具调用。
+
+### 35.4 ★★ 验收：真的跑一次任务 —— **`passed`**
+
+在**临时实例**（指向真上游，真模型 `qwen2.5:7b`，端口 8300）上跑一次真实任务：
+
+```
+run_id  : run_20260928_212052_3d1143
+status  : passed        phase: record
+commit  : 4a1c68177d3a6ae04f1e5cc853dc79c6fe6ac686
+touched : math_utils.py
+verify  : passed=True  source=caller
+```
+
+完整事件序（挂钩点一个不少地真的走到了）：
+
+```
+queued → run_start → baseline → cycle_start → attempt_start → phase → round_start
+→ orchestrator_decision → task_start → worker_step → model_reply → tool_call → tool_result
+→ worker_step → model_reply → task_done → verify_probe → orchestrator_round → verify_criterion
+→ plan → task_result → decompose_review → phase → files → manifest → phase → reuse
+→ syntax → lint → phase → verify → phase → cycle_end → self_report → run_end
+```
+
+**这一次运行还顺手补掉了上一轮的两条"没有真实运行"**：
+
+```
+verdict          = {"outcome":"pass","outcome_kind":"verified","criterion_source":"caller",
+                    "criterion_trust":"caller-authoritative","criterion_independent":true}
+decompose_review = passed=False  violated=[P3]  undecidable=[P2,P5]  independent=False
+reuse_checks     = {"checked":true,"passed":true,"blocking":[],"warnings":[]}
+self_report      = ok=True  done=1
+```
+
+⇒ 四值 / 判据来源 / 独立性**都是真实运行产出的**（上一轮只能用后端函数造的夹具）；
+**`reuse` 第一次有真实事件**。（该运行已复制进 `data/storage_data/runs/`，可在界面上打开。）
+
+### 35.5 新增/加强的门禁
+
+| 门禁 | 判据 |
+|---|---|
+| `test_hook_compat.py` **[6]** | 挂钩体**不许引用不存在的模块全局**：`dis` 扫 `LOAD_GLOBAL`/`LOAD_NAME`（**不依赖 ruff**）+ **负向**（假函数必须被扫出来） |
+| `test_hook_compat.py` **[6] 判据 G** | `ruff check --select F821 --ignore-noqa bridge/` **零命中**；并**对照**不忽略压制也应为 0（证明没靠 noqa 遮） |
+| `test_hook_compat.py` **[7]** | **生产路径冒烟**：装上挂钩之后真的调一次 `Worker._invoke`，断言发出 `tool_call`/`tool_result` |
+| `hook_verify_e2e.py` | 改成**不绕过任何挂钩点**（只伪造最底层 `LLMClient._client`），并**逐点断言各自的事件真的出现** |
+
+### 35.6 验证
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 挂钩点兼容（自带副本 / 真上游） | `python tests/unit/test_hook_compat.py` | **25/25** / **28/28** |
+| 判据 G | `.venv\Scripts\ruff.exe check --select F821 --ignore-noqa bridge/` | `All checks passed!` |
+| 生产路径 e2e（离线，不绕过挂钩） | `AGENT_BACKEND_DIR=… python tests/diagnostics/hook_verify_e2e.py` | **10/10** |
+| **真实运行**（真模型） | 临时实例 8300 + `POST /api/runs` | **`passed`**（`run_20260928_212052_3d1143`） |
+| 离线全量（两种配置） | `python tests/run_unit.py` | 见 `docs/VERSIONS.md` 该版记录 |
+| 体检 / 目录归属 / 新鲜度 | `doctor.py` · `layout.py --check` · `freshness.py` | 失败 0 项 · exit 0 · `state=ok` |
+
+---
+
+## 36. `_safe` 的契约：**它一个异常都没兜住** —— ✅ 已落地
+
+**来源**：统筹方 `DISPATCH.md`（契约 v1.0.28）。本轮起因是**我自己的文档写了做不到的事**。
+
+### 36.1 根因：`except BaseException: raise` 把 `except Exception` 变成死代码
+
+```python
+# bridge/hooks.py:48-55（改前）
+def _safe(fn, *args, **kwargs):
+    """挂钩内部一律走这里：进度出问题绝不能影响上游执行。"""
+    try:
+        return fn(*args, **kwargs)
+    except BaseException:  # RunCancelled 要穿出去，见 progress.py
+        raise              # ← 把**所有**异常都截走并重抛了
+    except Exception:      # ← 永远走不到（死代码）
+        return None
+```
+
+而模块抬头明确承诺：「**每个包装都兜住自己的异常，进度坏掉不能让 cycle 失败**」。
+实测（判据 H）：`_safe(lambda: 1/0)` **抛出 `ZeroDivisionError`** —— **一个都没兜住**。
+
+**为什么这不是"少挡一个异常"**：挂钩自身的任何 bug（`emit_progress` 撞上意外 payload、
+`preview_args` 遇到没料到的类型）都会**杀掉用户的整轮运行**，
+而用户看到的 `status=error` 与"模型做不出来"**长得一模一样** ⇒ **污染能力画像**
+（那正是四值结局里 `invalid` 要解决的问题）。
+
+★ **这是又一次 U- 类（声明 vs 实现不符），而方向是危险的**：
+我的 `EVALUATION-HOOKS-PASSTHROUGH-2.md` §35.3 写着「解析失败由 `_safe` 兜住」——
+**代码没有兜住**，那句话让人以为这一层已经被包住了。
+
+### 36.2 同一类的第二处：**实参在进 `_safe` 之前求值**
+
+```python
+args = _safe(worker_cls()._parse_args, arguments_json)
+#            ^^^^^^^^^^^^ 在 _safe **之外**求值 ⇒ 取类失败照样炸穿
+```
+
+统筹方点出了这一处。我接着**全量扫**了所有 `_safe(emit_progress, …)`：
+凡**实参里带函数调用**的都在保护之外，最容易炸的有 5 处 ——
+`preview_args(name, args)`、`command.label()`、`list(transitions)`、
+`list(paths)`、`list(task.tool_hint)`。
+⇒ 所以修法不是"把 `worker_cls()` 挪进去"，而是**让"构造 payload + 播报"整条都在保护内**。
+
+### 36.3 修法
+
+```diff
+ def _safe(fn, *args, **kwargs):
+     try:
+         return fn(*args, **kwargs)
+-    except BaseException:
++    except RunCancelled:
+         raise
+     except Exception:
+         return None
+```
+
+新增两个内部函数，**把"求值"也包进来**：
+
+```python
+def parse_worker_args(arguments_json):
+    """取 `Worker` 类并解析工具参数 —— **整条**都在 `_safe` 的保护范围内。"""
+    return worker_cls()._parse_args(arguments_json)
+
+def emit_safe(event_kind: str, build, *args):
+    """播报一条事件，**payload 的构造也在保护范围内**。"""
+    return _safe(lambda: emit_progress(event_kind, **build(*args)))
+```
+
+并把 5 处 emit 改成 `emit_safe(kind, _xxx_payload, …)`（payload 构造搬进内层函数）。
+
+### 36.4 ★★ 验收：注入故障之后**整轮运行照样跑完**
+
+`hook_verify_e2e.py` 新增 **[B] 故意注入异常**场景（monkeypatch `preview_args` 抛 `TypeError`）：
+
+```
+[B] 故意在挂钩里注入异常：**整轮运行必须照样跑完**
+  phase=record · 异常=无
+  PASS  ★★ 挂钩里的异常**没有**杀掉这一轮（cycle 跑完了）   None
+  PASS  ★★ 而且它照样走到了 verify（坏掉的只是那一条事件）
+  PASS  ★ 代价可见：`tool_call` 那一条事件确实**缺了**（不是静默假装成功）
+  PASS  ★ 但流程本身照旧：run_start / task_start / cycle_end 都在
+通过 12/12
+```
+
+改前这一注入会**杀掉整轮运行**（`status=error`，与"模型做不出来"同形）。
+
+**同时验"修好 A 弄坏 B"的反面**（真实运行、真模型、重启后的实例）：
+
+```
+run_id  : run_20260928_221959_80417d
+status  : passed        phase: record        touched: str_utils.py
+verify  : passed=True   source=caller
+verdict : {"outcome":"pass","criterion_source":"caller",
+           "criterion_trust":"caller-authoritative","criterion_independent":true}
+```
+
+### 36.5 新增门禁
+
+| 门禁 | 判据 |
+|---|---|
+| `test_hook_compat.py` **[8] 判据 H** | 行为：普通异常被吞（返回 `None`）/ 自定义异常被吞 / 正常值照旧透出 / **`RunCancelled` 仍穿出** / `KeyboardInterrupt` 穿出 |
+| `test_hook_compat.py` **[8] 判据 I** | 结构：`_safe` 的**代码**（用 `ast` 摘掉 docstring 后）里没有 `except BaseException`、且确有 `except RunCancelled` + `except Exception` |
+| `test_hook_compat.py` **[8] 负向** | 把**旧形态**喂给同一组行为判据，**必须判红** |
+| `test_hook_compat.py` **[7] 修空洞断言** | 原来写的是 `check(…, True)` —— **硬编码 True 永远不会红**却计入 N/N（统筹方点出）；改成真的断言"没抛异常" |
+| `hook_verify_e2e.py` **[B]** | 注入故障 ⇒ cycle 跑完 + 代价可见（事件缺一条） |
+
+### 36.6 ★ 改这个写法**差点弄坏另一处**：两个 AST 扫描器只认旧写法
+
+`emit_progress` 的"kind 在哪"有**两个**扫描器（`bridge/spec.py` 的 `_scan_calls()`
+与 `test_event_contract.py` 的 `scan_kinds()`，后者决定 `/api/spec` 的事件分区）。
+我改成 `emit_safe("kind", _build, …)` 之后，**两个都看不见那 5 个事件了**：
+
+```
+bridge 侧认到 0 个（改之前 21 个）· 总数 39 → 34
+```
+
+**它不报错、只是少认** —— 本仓库最怕的"静默少显示"。
+**是我自己的三个门禁同时红抓到的**（`test_partition` / `test_spec` / `test_event_contract`）。
+
+修法：两个扫描器都学会第三种写法；并新增判据 `test_hook_compat.py` **[9]**：
+**hooks.py 里每一个 emit 调用点扫描器都必须认得**（当前 **16 ↔ 16**），
+外加 5 个"最容易漏"的 kind 当金丝雀（`phase`/`files`/`task_start`/`tool_call`/`verify_probe`）。
+
+### 36.7 验证
+
+| 检查 | 自带副本 | 真上游 |
+|---|---|---|
+| `tests/unit/test_hook_compat.py` | **39/39** | **42/42** |
+| `tests/diagnostics/hook_verify_e2e.py` | 分流 SKIP「走到 verify」 | **12/12** |
+| `tests/run_unit.py` | **38/38 文件 exit 0** | **38/38 文件 exit 0** |
+| `/api/spec` 事件分区 | —— | **18 + 21 = 39**（uncalibrated / dead 均空） |
+| `ruff F821 --ignore-noqa bridge/` | `All checks passed!` | 同 |
+| 真实运行（真模型） | —— | **`passed`**（`run_20260928_221959_80417d`） |
+
+---
+
 ## 回归基线
 
 任何改动后至少跑：

@@ -341,6 +341,9 @@ def main() -> int:
         checks.append(("没有行尾混合的文件", not mixed))
         checks.append(("行尾检查确实扫到了文件（否则是空转）", scanned > 50))
 
+    # ---- 第 10 组也并进同一份汇总（否则 backup.py 会抓到"4/4"那行） ----
+    group10_event_count(checks)
+
     print("\n" + "=" * 74)
     print("断言检查")
     print("=" * 74)
@@ -353,6 +356,74 @@ def main() -> int:
         for f in failed:
             print(f"  - {f}")
     return 1 if failed else 0
+# ===========================================================================
+# 第 10 组：文档里写的"上游 N 种事件"必须等于代码里的事件种类数
+#   （配套 `REUSE-SYMBOL-SCOPE`：v1.22 曾把 18 写成 19 —— 把 `cycle_end` 新增的
+#    两个 payload 键当成了一个新事件。这是 **U- 类"声明 vs 实现不符"**，
+#    这类数字必须有机械门禁，否则只能靠人眼。）
+#
+#   2026-10-03（`ENVELOPE-WIRING` / D30）补两块：
+#     ① 判据只认 `上游 N 种事件` 一种写法 ⇒ 扫不到
+#        `upstream_event_kinds`（当前 N 个）—— 而 `docs/PENDING_DECISIONS.md`
+#        写的正是后者（写着 13，实测 18）。现按两种写法抓，并纳入该文档；
+#     ② 新增**反向**：合成一段陈旧声明，判据必须判"不一致"（证明它抓得住）。
+# ===========================================================================
+def _event_count_claims(text: str) -> list[tuple[str, int]]:
+    """抓文档里"上游事件种类数"的两种声明写法：`上游 N 种事件` / `当前 N 个`。
+
+    第二种是 2026-10-03 补的：`docs/PENDING_DECISIONS.md` 里写的是
+    「`upstream_event_kinds` 只写上游的事件（当前 **13** 个）」——
+    实测是 18，而旧判据只认"上游 N 种事件"，**扫不到它**（漏掉了声明写法）。
+    """
+    out: list[tuple[str, int]] = []
+    for m in re.finditer(r"上游[^0-9\n]{0,14}(\d+)\s*种事件", text):
+        out.append(("上游 N 种事件", int(m.group(1))))
+    for m in re.finditer(r"`upstream_event_kinds`[^。\n]{0,80}?当前\s*\**(\d+)\**\s*个", text):
+        out.append(("upstream_event_kinds 当前 N 个", int(m.group(1))))
+    return out
+
+
+def group10_event_count(checks: list[tuple[str, bool]]) -> None:
+    import re as _re
+
+    from core import contract as _ct
+
+    actual = len(_ct.EVENTS)
+    # 加 PENDING_DECISIONS.md：它就是本轮实测漂移（13 vs 18）的所在文档。
+    docs = ["docs/FRONTEND_CONTRACT.md", "README.md", "docs/OPERATIONS.md",
+            "docs/MODULES.md", "CYCLE.md", "docs/PENDING_DECISIONS.md"]
+    hits = 0
+    print("\n" + "=" * 74)
+    print(f"[10] 文档声明的事件种类数 == 代码里的 {actual}")
+    print("=" * 74)
+    for rel in docs:
+        path = os.path.join(ROOT, rel)
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        for form, got in _event_count_claims(text):
+            hits += 1
+            ok = got == actual
+            print(f"  {rel}: 声明 {got} / 实际 {actual}  [{form}]  "
+                  f"{'OK' if ok else 'DRIFT'}")
+            checks.append((f"{rel} 的事件种类数与代码一致（{actual}）", ok))
+    if hits == 0:
+        # 一条都没扫到 = 空转，本身就该红（否则门禁形同不存在）
+        print("  没有扫到任何『上游 N 种事件』的声明")
+        checks.append(("文档里确实有『上游 N 种事件』的声明（否则门禁空转）", False))
+    else:
+        checks.append(("事件数门禁确实扫到了声明（否则空转）", True))
+
+    # ★ 反向（2026-10-03 补）：判据本身必须**能红**。
+    # 上面那条只证明"当前文档与代码一致"，不证明"判据抓得住不一致"。
+    # 用一段合成的陈旧声明走同一解析路径：必须报出与 actual 不符。
+    stale_sample = "上游 999 种事件；`upstream_event_kinds` 只写上游（当前 999 个）。"
+    detected = [n for _form, n in _event_count_claims(stale_sample)]
+    caught = bool(detected) and all(n != actual for n in detected)
+    print(f"  反向：合成声明 {detected} ⇒ 判据{'抓到' if caught else '没抓到'}")
+    checks.append(("★ 事件数判据有牙齿（合成的陈旧声明必须被判不一致）", caught))
 
 
 raise SystemExit(main())

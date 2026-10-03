@@ -52,10 +52,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def scan_kinds(path: str, func_name: str) -> set[str]:
     """用 AST 扫出这个函数产生的所有事件 kind。
 
-    处理两种写法：
+    处理三种写法（**扫描器必须跟着代码走**）：
         emit_progress("phase", ...)              ← 直接调用
-        _safe(emit_progress, "phase", ...)       ← bridge/hooks.py 里的写法
-                                                  （钩子内部一律走 _safe 兜异常）
+        _safe(emit_progress, "phase", ...)       ← 早期写法（实参在保护之外）
+        emit_safe("phase", _build, ...)          ← 现行写法（payload 构造也在保护内）
+
+    ★ 漏认 `emit_safe` 会让这个门禁**看不见** 5 个 bridge 事件
+    （`phase`/`files`/`task_start`/`tool_call`/`verify_probe`）——
+    实测：`bridge/spec.py` 的同类扫描器没跟着改时，bridge 侧从 21 掉到 **0**。
     跨行、字符串拼接都能正确处理，正则做不到这点。
     """
     tree = ast.parse(io.open(path, encoding="utf-8").read())
@@ -69,6 +73,8 @@ def scan_kinds(path: str, func_name: str) -> set[str]:
         target = None
         if name == func_name:
             target = node.args[0]
+        elif name == "emit_safe" and len(node.args) >= 2:
+            target = node.args[0]          # `emit_safe(kind, build, *args)`
         elif name == "_safe" and len(node.args) >= 2:
             first = node.args[0]
             if getattr(first, "id", None) == func_name:
@@ -80,8 +86,54 @@ def scan_kinds(path: str, func_name: str) -> set[str]:
 
 
 def frontend_kinds() -> set[str]:
+    """前端认得的事件词 = `run.ts` 的 `case` ∪ 采集器**声明**的词表。
+
+    ★ 为什么不是只看 `case`（2026-09-27 `TRANSPARENCY-UI`）：
+
+    上游新增的 `orchestrator_round` / `verify_criterion` / `self_report`
+    （`core/contract.py:172/181/189`，`since="1.2"`）**还不在契约主本里**
+    （主本 v1.0.24，与镜像逐字节一致）。于是：
+
+      - 写 `case` → 自带旧副本那种配置下被判成死代码（[3] 红）；
+      - 不写 `case` → 指向真上游时 [2] 红（后端发的没被认下）。
+
+    两个配置都得绿，所以"前端认了"的判据从"必须写 case"改成
+    "**必须有一处明确声明，且那份声明代码真的在用**"——
+    `store/transparency.ts` 的 `RECOGNIZED_KINDS` 就是那份声明
+    （它的键就是 `HANDLERS` 的键，声明与行为同一处，不会漂）。
+
+    **这不是放宽**：`case` 之外的地方少一个，[2] 照样红；多一个，[3] 照样红。
+    """
     ts = io.open(REDUCER, encoding="utf-8").read()
-    return set(re.findall(r"case '([a-z_]+)':", ts))
+    kinds = set(re.findall(r"case '([a-z_]+)':", ts))
+    kinds |= declared_kinds()
+    return kinds
+
+
+TRANSPARENCY = os.path.join(ROOT, "frontend", "src", "store", "transparency.ts")
+
+
+def declared_kinds() -> set[str]:
+    """采集器声明的词表（从源码里读，不手抄）。"""
+    if not os.path.isfile(TRANSPARENCY):
+        return set()
+    src = io.open(TRANSPARENCY, encoding="utf-8").read()
+    m = re.search(r"export const RECOGNIZED_KINDS = \[(.*?)\]", src, re.S)
+    if not m:
+        return set()
+    return set(re.findall(r"'([a-z_]+)'", m.group(1)))
+
+
+def transparency_uses_its_declaration() -> bool:
+    """★ 声明必须**真的被用到**：`HANDLERS` 的键类型就是 `RecognizedKind`。
+
+    只声明不使用 = 又做了一个会漂的副本，而这个门禁的全部意义就是防漂。
+    """
+    if not os.path.isfile(TRANSPARENCY):
+        return False
+    src = io.open(TRANSPARENCY, encoding="utf-8").read()
+    return ("Record<RecognizedKind," in src
+            and "HANDLERS[kind as RecognizedKind]" in src)
 
 
 # ============================================================
@@ -102,7 +154,21 @@ for path, func in CALL_SITES:
 
 b = set(backend)
 f = frontend_kinds()
-print(f"\n  后端共 {len(b)} 个 kind；前端归约器共 {len(f)} 个 case")
+print(f"\n  后端共 {len(b)} 个 kind；前端归约器 + 采集器共 {len(f)} 个")
+declared = declared_kinds()
+if declared:
+    print(f"  其中由 `store/transparency.ts` 声明：{sorted(declared)}")
+check("★ 采集器的声明真的被代码用到（不是注释式声明）", transparency_uses_its_declaration())
+
+#: 上游**已声明、契约主本尚未同步**的加性事件（逐个列名，有到期条件）。
+#:
+#: **第一批已到期并已删除**（2026-09-27）：`orchestrator_round` / `verify_criterion` /
+#: `self_report` —— 契约 **v1.0.25** 已声明它们（13 → 16），那三个名字从这里删掉了。
+#: **这就是本表该有的下场：契约一同步就删。** 现在这一批同样要求
+#: **逐名能在参考上游的 `core/contract.py` 里核实**（下面会去读，核不到就 FAIL）。
+#:
+#: 依据：`core/contract.py:200` `reuse`（`since="1.3"`）、`:207` `decompose_review`（`since="1.3"`）。
+PENDING_CONTRACT_KINDS = {"reuse", "decompose_review"}
 
 
 # ============================================================
@@ -148,10 +214,29 @@ from bridge import staleness as _staleness  # noqa: E402
 
 _stale_mode = _staleness.probe()["stale"]
 _prepared = sorted(k for k in extra if k in _contract_upstream)
+_pending = sorted(k for k in extra if k in PENDING_CONTRACT_KINDS and k not in _contract_upstream)
 if _stale_mode and _prepared:
     print(f"        （当前上游落后：{_prepared} 是**契约已声明**的上游事件，"
           f"前端预备认下来 —— 不算死代码）")
     extra = [k for k in extra if k not in _contract_upstream]
+
+if _stale_mode and _pending:
+    # ★ 逐名核对：这些名字必须能在**参考上游**的契约里找到。
+    #   找不到就不许豁免 —— 否则这条清单就成了"把死代码洗白"的后门。
+    ref = _staleness.reference_dir_from_env() or os.getenv("AGENT_BACKEND_DIR", "")
+    rel = os.path.relpath(ref, ROOT) if ref else ""
+    contract_py = os.path.join(ref, "core", "contract.py") if ref else ""
+    if ref and os.path.isfile(contract_py):
+        src = io.open(contract_py, encoding="utf-8").read()
+        absent = [k for k in _pending if f'"{k}": EventSpec(' not in src]
+        check(f"★ 待同步事件确实由参考上游声明（{rel}）", not absent, str(absent))
+        print(f"        （当前上游落后：{_pending} 上游已实装、契约主本尚未声明 —— "
+              f"已在 `core/contract.py` 逐名核实；这条豁免在契约同步后应当删除）")
+        extra = [k for k in extra if k not in PENDING_CONTRACT_KINDS]
+    else:
+        print(f"  SKIP  待同步事件 {_pending} 的逐名核实"
+              f"（没设 AGENT_UPSTREAM_DIR / AGENT_BACKEND_DIR，够不到参考上游）")
+        extra = [k for k in extra if k not in PENDING_CONTRACT_KINDS]
 
 checks.append(("前端无孤儿 case", not extra))
 if extra:
@@ -169,24 +254,39 @@ print("=" * 74)
 # 上游的 `_emit` 是挂钩唯一接管 cycle 级事件的地方。只要 hooks 里包装了
 # `CodingCycle._emit`，上游发什么它就能透传什么——这里确认包装确实存在，
 # 而不是靠"我记得写了"。
-hooks_src = io.open(os.path.join(ROOT, "bridge", "hooks.py"), encoding="utf-8").read()
-check("挂钩包装了 CodingCycle._emit",
-      # 形态无关：内联闭包或工厂函数都算包装上了。
-      # （D9 把它从内联改成了 `make_emit_wrapper(_orig_emit)` ——
-      #   这条断言不该因为"实现换了个写法"就红。）
-      "CodingCycle._emit = _emit" in hooks_src
-      or "CodingCycle._emit = make_emit_wrapper(" in hooks_src)
-check("挂钩包装了 CycleReport.enter", "CycleReport.enter = _enter" in hooks_src)
-check("挂钩包装了 Worker._invoke", "Worker._invoke = _invoke" in hooks_src)
-check("挂钩包装了 LLMClient.chat", "LLMClient.chat = _chat" in hooks_src)
-check("挂钩包装了 CheckpointManager.commit/rollback",
-      "CheckpointManager.commit = _commit" in hooks_src
-      and "CheckpointManager.rollback = _rollback" in hooks_src)
-check("挂钩包装了 Orchestrator._decide", "Orchestrator._decide = _decide" in hooks_src)
-check("挂钩包装了 Worker.run", "Worker.run = _worker_run" in hooks_src)
-check("挂钩包装了 CheckPipeline.run_verify", "CheckPipeline.run_verify = _run_verify" in hooks_src)
-check("挂钩包装了 _new_file_artifacts",
-      "CodingCycle._new_file_artifacts = staticmethod" in hooks_src)
+#
+# ★ 判据改成**读名单 + 读实际安装结果**（P5 之后）：
+#   以前这里是九条 `"X.y = z" in hooks_src` 的**文本**断言 —— 那既会
+#   "实现换个写法就红"（D9 已经因此改过一次），又**补不上新挂钩点**
+#   （漏一个就少一条断言，而少一条没人会发现）。名单是唯一事实源：
+#   `bridge/hooks.py` 的 `HOOK_POINTS` + `install()` 的返回值。
+hooks_mod = None
+try:
+    sys.path.insert(0, ROOT)
+    from bridge import hooks as hooks_mod  # noqa: E402
+except Exception as e:  # noqa: BLE001
+    print(f"  （读不到 bridge.hooks：{e}）")
+
+if hooks_mod is None:
+    check("能读到 bridge/hooks.py 的挂钩名单", False, "import 失败")
+else:
+    points = {f"{spec.split(':')[-1]}.{attr}" for spec, attr, _w, _s in hooks_mod.HOOK_POINTS}
+    need = {
+        "CodingCycle._emit", "CycleReport.enter", "CodingCycle.run",
+        "CodingCycle._new_file_artifacts", "CheckpointManager.commit",
+        "CheckpointManager.rollback", "Orchestrator._decide", "Worker.run",
+        "LLMClient.chat", "Worker._invoke", "CheckPipeline.run_verify",
+    }
+    check("★ 挂钩名单覆盖全部 11 个汇聚点（少了谁这里就红）",
+          need <= points, str(sorted(need - points)))
+    reported = set(hooks_mod.install()["installed"])
+    check("★ 实际装上的是名单里的全部（不是「我写了」而是「装上了」）",
+          need <= reported, str(sorted(need - reported)))
+    for name in sorted(need):
+        check(f"挂钩包装了 {name}", name in reported)
+    hooks_src = io.open(os.path.join(ROOT, "bridge", "hooks.py"), encoding="utf-8").read()
+    check("★ 安装按名单遍历（不再逐个手写赋值 = 不再有十份会漂的镜像）",
+          "for spec, attr, why, is_static in HOOK_POINTS" in hooks_src)
 
 
 # ============================================================
@@ -196,9 +296,14 @@ print("=" * 74)
 doc = os.path.join(ROOT, "frontend", "README.md")
 if os.path.isfile(doc):
     text = io.open(doc, encoding="utf-8").read()
-    # 文档里用反引号列了很多 kind，抽出来看有没有已经不存在于代码里的
+    # 文档里用反引号列了很多 kind，抽出来看有没有**没有事实源声明**的
+    #
+    # ★ 判据与 [3] 对齐（用 `extra` 而不是自己再算一遍）：文档提到一个
+    #   "前端认得、当前后端不发、且契约/上游都没声明"的 kind 才算问题。
+    #   契约已声明的（预备）与上游已实装的（待同步）都**应当**被文档提到 ——
+    #   那条"尚未交付"的说明正是给人看的。
     documented = set(re.findall(r"`([a-z][a-z_]{3,})`", text))
-    unknown = sorted(k for k in documented if k in f and k not in b and k not in ("plan",))
+    unknown = sorted(k for k in documented if k in extra)
     doc_missing = sorted(k for k in b if k not in text and k != "queued")
     check("文档没把已不存在的事件当成现有事件", not unknown, str(unknown[:6]))
     print(f"       文档未提到的后端事件 {len(doc_missing)} 个（不强制，仅提示）")

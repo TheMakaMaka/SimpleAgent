@@ -9,6 +9,16 @@ from .prompts import WORKER_SYSTEM, build_worker_user_message
 from .task import Artifact, Task, TaskResult
 from tools import TOOLS_MAP, tool_schemas, is_error_result
 from tools.registry import PROFILE_CODING, hidden_names
+from tools.tool_contract import (
+    ENVELOPE_TOOLS,
+    ToolArgError,
+    build_envelope,
+    envelope_of,
+    error_result,
+    normalize_args,
+    try_normalize,
+    validate_result,
+)
 
 
 # 计划句式识别与错误前缀嗅探属于「模型耦合」，已移入 ModelCoupling。
@@ -144,24 +154,27 @@ class Worker:
                     # arguments 无效时用 content 里的代码块兜底
 
                     if name == "run_python":
-                        args = self._parse_args(tc.function.arguments) or {}
+                        # 去重必须用**归一后**的 code：否则 `{"script": …}` 这类别名
+                        # 会被读成空串，两次不同的代码被误判为"重复提交"。
+                        args = self._args_for_read(name, tc.function.arguments)
                         code = args.get("code", "")
-                        h = _code_hash(code)
-                        if h == last_code_hash:
-                            # 归一化后相同的代码，结果不会改变
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": (
-                                    "Error: 你刚刚提交了与上一次实质相同的代码（仅空白/换行差异），"
-                                    "结果不会改变。请修改代码逻辑后再试。"
-                                ),
-                            })
-                            step_had_error = True
-                            continue
-                        last_code_hash = h
+                        if code:
+                            h = _code_hash(code)
+                            if h == last_code_hash:
+                                # 归一化后相同的代码，结果不会改变
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": (
+                                        "Error: 你刚刚提交了与上一次实质相同的代码（仅空白/换行差异），"
+                                        "结果不会改变。请修改代码逻辑后再试。"
+                                    ),
+                                })
+                                step_had_error = True
+                                continue
+                            last_code_hash = h
                     if name == "run_python" and fallback_code:
-                        parsed = self._parse_args(raw_args) or {}
+                        parsed = self._args_for_read(name, raw_args)
                         if not parsed.get("code"):
                             print(f"  [W] arguments 无效，使用 content 代码块兜底", flush=True)
                             raw_args = json.dumps({"code": fallback_code}, ensure_ascii=False)
@@ -275,6 +288,16 @@ class Worker:
 
     # ---------- 内部 ----------
     async def _invoke(self, name: str, arguments_json: str) -> str:
+        """解析 → **归一/校验**（P9）→ 执行 → **产出检验** → **产出入信封**。
+
+        归一在这一层做的理由：它是"模型给的形状"进入工具前的**唯一闸门**，
+        所有调用方（子循环、兜底代码块、诊断）都经过它。
+
+        信封（P9 追加验收 ③）：`ENVELOPE_TOOLS` 里登记的工具体在这里
+        **套上** `{ok, kind, data, error}`。这一段是"机制接上了"的证据 ——
+        `audit().envelope_tools` 非空、且模型看到的就是信封本体，
+        不再是"建好了但没人用"。
+        """
         if name not in TOOLS_MAP:
             print(f"  [W:_invoke] 未知工具 {name}", flush=True)
             return f"Error: 未知工具 {name}"
@@ -284,19 +307,63 @@ class Worker:
             print(f"  [W:_invoke] JSON 解析失败 raw={arguments_json[:200]!r}", flush=True)
             return f"Error: 工具参数不是合法 JSON: {arguments_json[:120]}"
 
+        try:
+            args = normalize_args(name, args)
+        except ToolArgError as e:
+            # 结构化拒绝：把 code/message/hint 回灌给模型，而不是静默忽略它的键。
+            print(f"  [W:_invoke] {name} ARG-REJECT {e.code}: {e.message}", flush=True)
+            return error_result(name, e)
+
         print(f"  [W:_invoke] {name} keys={list(args.keys())}", flush=True)
         try:
             fn = TOOLS_MAP[name]["function"]
             result = await fn(**args)
-            print(f"  [W:_invoke] {name} len={len(result)} head={result[:200]!r}", flush=True)
+            # ★ 登记了信封的工具：先由**唯一一处**装配信封，再检验信封本体。
+            #   顺序反了会把工具自己的中间形状当成"不合规信封"拒掉
+            #  （实测：check_and_run 的 {ok,syntax_passed} 会被判缺 kind/data）。
+            enveloped = name in ENVELOPE_TOOLS
+            if enveloped:
+                result = build_envelope(name, result)
+            report = validate_result(name, result)
+            if report["action"] == "reject":
+                # 登记为"结果信封"的工具，产出不合规时**不能**让模型当成成功读。
+                print(f"  [W:_invoke] {name} RESULT-REJECT {report['problems']}", flush=True)
+                return report["error_result"]
+            if enveloped:
+                print(f"  [W:_invoke] {name} ENVELOPE kind={report.get('protocol')} "
+                      f"len={len(result)}", flush=True)
+            else:
+                print(f"  [W:_invoke] {name} len={len(result)} head={result[:200]!r}",
+                      flush=True)
             return result
         except Exception as e:
             print(f"  [W:_invoke] {name} EXC {e!r}", flush=True)
             return f"Error: 工具执行异常: {e}"
 
+    def _args_for_read(self, name: str, arguments_json: str) -> dict:
+        """旁路读取归一后的实参（去重/兜底/归档用）；不合规时返回 `{}`。
+
+        与 `_invoke` 的差别：这里**不报错**（那些旁路不该因为参数不合规而中断），
+        真正的拒绝发生在 `_invoke`。
+        """
+        parsed = self._parse_args(arguments_json)
+        if not isinstance(parsed, dict):
+            return {}
+        args, _err = try_normalize(name, parsed)
+        return args or {}
+
     @staticmethod
     def _maybe_artifact(tool_name: str, arguments_json: str, result: str, task_id: str = "") -> Artifact | None:
         args = Worker._parse_args(arguments_json) or {}
+        args, _err = try_normalize(tool_name, args)
+        args = args or {}
+
+        # 登记了信封的工具，产出内容在 `data` 里；取回**原本的产出**再读，
+        # 这样归档逻辑与"工具返回了什么"保持同一份事实（不是第二套读法）。
+        env = envelope_of(result)
+        payload = env.get("data") if env else result
+        if not isinstance(payload, str):
+            payload = json.dumps(payload, ensure_ascii=False, default=str)
 
         # --- run_python 成功 → 存代码 ---
         if tool_name == "run_python" and not is_error_result(result):
@@ -306,8 +373,8 @@ class Worker:
                 return Artifact(key=key, kind="code", content=code)
 
         # --- write_file 成功 → 存文件引用 ---
-        if tool_name == "write_file" and result.startswith("OK:FILE|"):
-            parts = result.split("|", 3)
+        if tool_name == "write_file" and payload.startswith("OK:FILE|"):
+            parts = payload.split("|", 3)
             if len(parts) >= 4:
                 filename = parts[1]
                 key = f"{task_id}_file_{filename}" if task_id else f"file_{filename}"

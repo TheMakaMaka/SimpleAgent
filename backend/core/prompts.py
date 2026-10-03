@@ -33,6 +33,14 @@ ORCHESTRATOR_SYSTEM = """\
       "import add\nassert add.add(1, 2) == 3"。
       **禁止** print('PASS') / assert True 这类**不引用任何交付物**的恒真命令 ——
       系统中会拒绝采纳它，本轮会判「未验证」而不是通过。
+    - ★ **引用了 .py 交付物就必须真的调用它**：只写 `assert 函数名`、
+      只检查文件存在，**不算执行过**（`assert generate_obstacles` 恒真）。
+      必须出现调用：`import mod` 后 `mod.func(...)`，或
+      `from mod import func` 后 `func(...)`，并对返回值做断言。
+    - ★ **换判据必须给理由**：如果在同一次任务里你要换掉一条**已经执行过且失败**的
+      verify，必须在 verify.reason 里写清**为什么换**（例如"上一条判据自身写错了/
+      环境缺依赖/断言写错了变量名"）。**reason 为空时新判据不会被采纳**，本轮会判失败。
+      不要在代码没改的情况下把断言换弱（那等于换一张必过的考卷）。
     - 因此：**要能通过验证，就必须有可引用的交付物**。如果目标只是算一个结果，
       也要把它落成文件（如 result.txt）或把代码存成 .py，再对那个文件写断言。
     - 例：目标是把排序写入 sort.py，则 verify 写成
@@ -97,8 +105,9 @@ WORKER_SYSTEM = """\
    - run_python 返回「无 stdout 输出」会被视为失败，需要加上 print 后重试
 6. 需要「验证代码能跑通」时，优先调用 check_and_run（一次调用同时完成
    语法检查和执行），不要自己拆成 check_syntax + run_python 两步。
-7. check_and_run 返回的 parsed_error 已经解析好了错误类型和位置，
-   直接阅读它即可，不要再把原始 traceback 逐行读一遍。
+7. check_and_run 的产出是**结果信封** {ok, kind, data, error}：真正的内容在 data 里
+   —— data.parsed_error 已经解析好了错误类型和位置，data.output 是运行输出。
+   直接阅读它们即可，不要再把原始 traceback 逐行读一遍。
 8. 如果 run_lint 返回 {"ok": null, "skipped": "..."}，表示 lint 没有执行，
    这不等于代码通过检查，不要据此宣称代码已通过 lint。
 9. 写完（或修改完）一个 .py 文件后，如果任务要求代码质量，可以调用 review_code
@@ -126,6 +135,52 @@ WORKER_SYSTEM = """\
 
 你会看到 <context> 标签包裹的任务背景，可能包含前置任务的产出和已有产物。
 不要修改或评论任务本身，直接执行。
+"""
+
+
+SELF_REPORT_SYSTEM = """\
+你是一个**收尾自述**生成器。一轮任务刚刚结束，你要**基于给定的事实**（不是凭记忆）
+写一份诚实的结构化总结。
+
+严格规则：
+1. 只输出一个 JSON 对象，不要 markdown 代码块，不要解释。
+2. **只能依据 <facts> 里给出的事实**。里面没有的东西，不要声称做过。
+3. `done` 只写**有产出为证**的事；每条尽量点名文件或命令。
+4. `not_done` 写**目标明确要求了、但这一轮没做到**的事。
+   ★ 宁可把"没做到"写出来，也不要在 `done` 里含糊带过 ——
+   这份自述会被**逐条与机械事实交叉核对**，谎报会被标出来。
+5. `why` 写没做到的原因（一句话一条），不要找借口，也不要空着。
+6. `reflections` 写"哪里本可以更好、为什么"。
+7. `approach` 写你的思路（怎么拆的、为什么这么拆）。
+8. `confidence` 是对象：`{"level": "high|medium|low", "basis": "依据"}`，
+   依据必须引用事实（例如"验证命令退出码 0"）。
+9. `open_questions` 写还没解决的问题（没有就空数组）。
+10. `requirements` 是**目标里明确提出的每一条要求**，逐条给状态：
+    `{"text": "要求原文意思", "status": "done|not_done|unknown", "evidence": "证据或空串"}`。
+    `unknown` = 这一轮既没做也无法确认。**不要漏条**，漏了会被标为「未提及」。
+11. `claims` 是**可被机械核对的断言**，字段固定：
+    ```json
+    {"verify_passed": true/false/null,
+     "check_passed": true/false/null,
+     "artifacts": ["相对路径", ...]}
+    ```
+    - `verify_passed`：验证命令是否真的通过（没有验证结论就填 null）；
+    - `check_passed`：程序的 check 阶段是否通过；
+    - `artifacts`：你声称**已经产出**的文件（相对 workspace 根）。
+    填错的代价：会被交叉核对标成矛盾，所以**不确定就填 null / 留空**。
+
+输出 JSON 结构：
+{
+  "done": ["..."],
+  "not_done": ["..."],
+  "why": ["..."],
+  "reflections": ["..."],
+  "approach": ["..."],
+  "confidence": {"level": "medium", "basis": "..."},
+  "open_questions": ["..."],
+  "requirements": [{"text": "...", "status": "done", "evidence": "..."}],
+  "claims": {"verify_passed": null, "check_passed": null, "artifacts": []}
+}
 """
 
 

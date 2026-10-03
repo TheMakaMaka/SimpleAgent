@@ -559,6 +559,14 @@ try:
                 .get("event_partition") or {}).get("observed") or {}
     _want_up = _obs.get("upstream_count")
     _want_fe = _obs.get("bridge_count")
+    # ★ 上游**比契约新**时同一条纪律：期望值 = 契约 + **已登记的**契约滞后
+    #   （事实源是 `bridge/partition.CONTRACT_LAG_KINDS`，不在这里另抄名单）。
+    try:
+        from bridge import partition as _part
+
+        _lag = len(getattr(_part, "CONTRACT_LAG_KINDS", frozenset()))
+    except Exception:  # noqa: BLE001
+        _lag = 0
     if _stale:
         print(f"  SKIP  真实 spec 事件分区 == 契约 {_want_up} + {_want_fe}"
               f"（上游落后，推导会少一个）")
@@ -566,8 +574,9 @@ try:
               len(real["event_partition"]["frontend"]) == _want_fe,
               f"{len(real['event_partition']['frontend'])} vs {_want_fe}")
     else:
-        check(f"真实 spec 事件分区 {_want_up} + {_want_fe}",
-              len(real["event_partition"]["upstream"]) == _want_up
+        check(f"真实 spec 事件分区 {(_want_up or 0) + _lag} + {_want_fe}"
+              + (f"（契约 {_want_up} + 已登记滞后 {_lag}）" if _lag else ""),
+              len(real["event_partition"]["upstream"]) == (_want_up or 0) + _lag
               and len(real["event_partition"]["frontend"]) == _want_fe,
               f"{len(real['event_partition']['upstream'])}+"
               f"{len(real['event_partition']['frontend'])}")

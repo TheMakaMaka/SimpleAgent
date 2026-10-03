@@ -33,9 +33,11 @@ from core import (
     resolve_profile,
 )
 from core import code_identity
+from core import runtime
 from core.contract import audit as contract_audit
 from core.contract import compare as contract_compare
 from core.contract import describe as contract_describe
+from core.runtime import ScopeError
 from core.vision import describe as vision_describe
 from storage import RunStore
 from web.decisions import router as decisions_router
@@ -55,6 +57,9 @@ def _approval_base_url() -> str:
 class RunRequest(BaseModel):
     goal: str
     session_id: str = "default"
+    # ★ P15：**任务级**目标项目根（目标代码库的绝对路径）。不传 = 旧行为（workspace）。
+    # ⚠️ 与 `AGENT_BACKEND_DIR` 不是一回事：后者是**被测程序自己的源码**。
+    project_root: str | None = None
 
 
 class RunResponse(BaseModel):
@@ -64,6 +69,9 @@ class RunResponse(BaseModel):
     tasks_total: int
     tasks_ok: int
     tasks_failed: int
+    # ★ P14/P15：运行根 / 工作区根 / 输出根 + 本次真正生效的目标项目根
+    runtime: dict | None = None
+    project_root: str | None = None
 
 
 class EncodeRequest(BaseModel):
@@ -81,6 +89,15 @@ class EncodeRequest(BaseModel):
     on_decision: str = "auto"
     # 连续失败多少次后转人工
     max_consecutive_failures: int = 2
+    # ★ P15：任务级目标项目根（每次任务给一个）。不传 = workspace。
+    project_root: str | None = None
+    # ★ P14：任务开始前**声明产出路径**。容忍 `["a.txt"]` 或
+    # `[{"path": "a.txt", "sha256": "...", "size": 12}]`。
+    # 声明了 ⇒ 必须存在且哈希一致，否则结局 delivery-gap（fail）。
+    deliverables: list = []
+    # ★ P17：调用方为**静态交付物**给的可复核理由（没有可执行判据时用，
+    # 例：「本次交付物是说明文档，不是代码」）。空串 ⇒ static_declared 证据不成立。
+    static_reason: str = ""
 
 
 class EncodeResponse(BaseModel):
@@ -97,6 +114,12 @@ class EncodeResponse(BaseModel):
     verify_passed: bool | None
     manifest_passed: bool | None
     error: str | None
+    # ★ P14/P15：三个绝对根 + 生效的目标项目根 + 交付物对账（声明的 vs 实际产物）
+    runtime: dict | None = None
+    project_root: str | None = None
+    deliverables: dict | None = None
+    # ★ P17：这次结局**靠什么**（pass 必带 checked_by + evidence_kind）
+    evidence: dict | None = None
 
 
 def _build_orchestrator() -> Orchestrator:
@@ -146,7 +169,13 @@ async def run(req: RunRequest):
         raise HTTPException(400, "goal 不能为空")
 
     orchestrator = _build_orchestrator()
-    result = await orchestrator.run(req.goal)
+    # ★ P15：任务级目标项目根 —— 只在本次请求期间生效（ContextVar），
+    # 退出时（含异常）一定还原，不会串到下一个任务。
+    try:
+        with runtime.use_project_root(req.project_root):
+            result = await orchestrator.run(req.goal)
+    except ScopeError as e:
+        raise HTTPException(400, e.to_dict())
 
     store = RunStore(req.session_id)
     store.append_run(
@@ -166,6 +195,8 @@ async def run(req: RunRequest):
         tasks_total=len(result.memory.records),
         tasks_ok=ok_count,
         tasks_failed=fail_count,
+        runtime=runtime.describe(),
+        project_root=runtime.project_root(),
     )
 
 
@@ -196,7 +227,19 @@ async def encode(req: EncodeRequest):
             reason=req.verify_reason or "调用方指定的验证命令",
         )
 
-    report, memory = await cycle.run(req.goal, verify_command=verify)
+    try:
+        report, memory = await cycle.run(
+            req.goal,
+            verify_command=verify,
+            # ★ P14/P15：任务级目标项目根 + 任务开始前声明的交付物
+            deliverables=req.deliverables,
+            project_root=req.project_root,
+            # ★ P17：静态交付物的可复核理由（没有它，pass 只能靠执行/产物证据）
+            static_reason=req.static_reason,
+        )
+    except ScopeError as e:
+        # 结构化拒绝：目标项目根不存在 / 声明的交付物越界，都不是内部错误
+        raise HTTPException(400, e.to_dict())
 
     print(f"\n===== CycleReport =====\n{report.to_dict()}\n")
 
@@ -229,6 +272,12 @@ async def encode(req: EncodeRequest):
         verify_passed=(report.verify or {}).get("passed"),
         manifest_passed=(report.manifest or {}).get("passed"),
         error=report.error,
+        # ★ P14/P15：三个绝对根 + 生效的目标项目根 + 交付物对账（实际产物含 sha256/size）
+        runtime=runtime.describe(),
+        project_root=runtime.project_root(),
+        deliverables=report.deliverables,
+        # ★ P17：pass 的机械证据（checked_by + evidence_kind + 结构）
+        evidence=report.evidence,
     )
 
 
@@ -542,12 +591,22 @@ _contract_startup_check()
 @app.get("/profile")
 async def profile():
     """暴露当前生效的模型接入参数，便于换模型时确认预算是否符合预期。"""
+    from core import evidence as _evidence
+
     profiles = resolve_profiles()
     return {
         # ★ 代码身份：**这一次运行加载的是哪一份上游代码**（含内容级指纹）。
         # 实测事故（CHANGELOG §31）：用户反复失败而修复没生效 ——
         # 因为前端用了自带的陈旧副本，而当时的记录里没有任何字段能回答这个问题。
         "code": code_identity(),
+        # ★ P14/P15：**三个互不混淆的绝对路径**（运行根 / 工作区根 / 输出根）
+        # + 任务级目标项目根（与 AGENT_BACKEND_DIR 语义分离）。
+        # 此前 `/profile` 里根本没有 `runtime` 段 —— 调用方不知道交付物在哪，
+        # 也就无法核对"有没有产出、产出了什么"。
+        "runtime": runtime.describe(),
+        # ★ P17：pass 的证据契约（checked_by + evidence_kind）——
+        # 换模型时"读数可比"的前提；没有它，更爱自我宣称的模型会拿到更高的分。
+        "pass_evidence": _evidence.describe(),
         "checkpoint_backend": {
             "selected": CheckpointManager().name,
             "git": get_git_status(),

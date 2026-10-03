@@ -28,6 +28,7 @@ import VerifyPanel from '@/components/VerifyPanel.vue'
 import ArtifactPanel from '@/components/ArtifactPanel.vue'
 import RunHistory from '@/components/RunHistory.vue'
 import DecisionBar from '@/components/DecisionBar.vue'
+import TransparencyPanel from '@/components/TransparencyPanel.vue'
 
 const store = useRunStore()
 const { state } = store
@@ -41,6 +42,8 @@ const decisions = ref<DecisionView[]>([])
 const answering = ref<string | null>(null)
 const decisionError = ref('')
 const toast = ref('')
+/** 「为什么」审查条默认展开：这四块是用户明确要看的，藏起来等于没做 */
+const tpCollapsed = ref(false)
 
 let stream: StreamHandle | null = null
 let healthTimer = 0
@@ -86,6 +89,26 @@ async function refreshDecisions() {
 }
 
 /* ------------------------------ 订阅 / 回放 ------------------------------ */
+/**
+ * 取一次运行报告并交给 store。
+ *
+ * P3/P4 的事实（`outcome` / `verdict` / `decompose_review` / `reuse_checks` /
+ * `self_report`）**首先是报告字段**：事件流里只有子集，而**旧运行**（本轮之前跑的）
+ * 事件里根本没有 verdict。历史回放走的也是这条路，所以回放与实时看到的是同一批数据。
+ *
+ * 失败**不弹 toast**：报告拿不到只意味着"少一块明细"，主流程（事件流）照旧。
+ */
+async function loadReport(runId: string) {
+  try {
+    const res = await api.getRun(runId)
+    // 期间可能已经切到别的运行了 —— 别把上一份报告混进来
+    if (state.runId !== runId) return
+    store.ingestReportInfo(res.run?.report ?? null)
+  } catch {
+    /* 报告拿不到不影响主流程 */
+  }
+}
+
 async function attach(runId: string, replayOnly = false) {
   stream?.close()
   stream = null
@@ -95,6 +118,10 @@ async function attach(runId: string, replayOnly = false) {
   try {
     const res = await api.runEvents(runId, 0, 20000)
     store.ingestMany(res.events)
+    // ★ P3/P4：报告的字段（结局四值 / 判据来源 / 独立性 / 拆解合规 / 复用性）
+    //   **事件流里只有子集，旧运行更是没有** —— 所以运行详情单独取一次。
+    //   取不到不影响界面（`store.ingestReportInfo` 对空报告是 no-op）。
+    void loadReport(runId)
 
     if (res.terminal || replayOnly) {
       state.connected = 'closed'
@@ -289,6 +316,12 @@ onUnmounted(() => {
       </div>
     </main>
 
+    <!-- 下：透明化审查（A2/A3/B4/C3/D3）—— 通栏，因为读的是"链条"而不是"格子" -->
+    <TransparencyPanel class="tpbar" :state="state" :class="{ 'tpbar--collapsed': tpCollapsed }" />
+    <button type="button" class="tpbar__toggle" @click="tpCollapsed = !tpCollapsed">
+      {{ tpCollapsed ? '▲ 展开「为什么」审查' : '▼ 收起「为什么」审查' }}
+    </button>
+
     <DecisionBar
       :decisions="decisions"
       :busy-id="answering"
@@ -352,6 +385,34 @@ onUnmounted(() => {
 
 .attempts {
   flex: 0 0 auto;
+}
+
+/* 「为什么」审查条：通栏放在三列之下。
+   为什么给它**固定高度**而不是 max-height：四块视图都是"链条"
+   （判据演化、决策轮次、模型回合），高度会跳会让阅读位置漂移。 */
+.tpbar {
+  flex: 0 0 auto;
+  height: 34vh;
+  min-height: 210px;
+  margin: 0 12px 4px;
+}
+.tpbar--collapsed {
+  display: none;
+}
+.tpbar__toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-bottom: 6px;
+  font-size: 10.5px;
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  background: rgba(11, 18, 32, 0.6);
+  color: var(--fg-2);
+}
+.tpbar__toggle:hover {
+  color: var(--cyan);
+  border-color: rgba(53, 224, 208, 0.5);
 }
 
 .goal {
@@ -482,6 +543,10 @@ onUnmounted(() => {
   }
   .col__grow {
     min-height: 320px;
+  }
+  /* 窄屏时整页滚动，固定高度会变成"里面再滚一层"，很难用 */
+  .tpbar {
+    height: auto;
   }
 }
 </style>

@@ -182,8 +182,58 @@ python tests/unit/test_frontend_contract.py
 curl -s http://127.0.0.1:8000/profile | python -c "import json,sys; a=json.load(sys.stdin)['contract']['audit']; print(a['ok'], a['event_count'], a['undeclared_events'], a['dead_events'])"
 ```
 
-上游目前是 **13 种事件 / 18 个工具**（前端 `diagnostics.event_count: 33` 里
+上游目前是 **18 种事件 / 18 个工具**（前端 `diagnostics.event_count: 33` 里
 其余的是 bridge 自己发的，属前端侧）。
+
+### 4.1 `parameters` 现在**显式封闭**（P9，加性）
+
+18 个工具的 `parameters` 现在都显式声明 `additionalProperties: false`
+（无参工具同样声明），可选参数带 `default`。这是**加性收紧**：
+
+* 工具名、参数语义、`TOOLS_MAP` 条目的**顶层键**都没变；
+* 前端若展示 `parameters`，会多看到 `additionalProperties` 与 `default`
+  两个标准 JSON Schema 关键字（本来就该有）；
+* 实参归一发生在**上游内部**（`tools/tool_contract.py` + `core/worker.py::_invoke`）：
+  同义键名收敛到一个 canonical 名（别名表经
+  `/profile` 的 `contract.tool_call_contract` **公开声明**），
+  未声明的键**结构化拒绝**而不是静默忽略；
+* 工具产出的信封 `{ok, kind, data, error}` 是**新协议**，
+  **旧字符串结果仍可读**（`is_error_result()` 回退路径未改）——
+  前端不需要跟着改。
+
+**★ 一个容易搞混的 kind：`orchestrator_decision` 是前端 bridge 发的，不是上游发的**
+（`bridge/hooks.py` 的 `Orchestrator._decide` 挂钩）。上游新增的是
+**`orchestrator_round`**（`TRANSPARENCY-BACKEND` A1）：
+两边数据同源（同一个 `_decide` 返回值），但**上游刻意不复用那个 kind** ——
+两个生产者发同一个 kind 会让审计无法判断哪条权威。
+前端若要做"决策依据"视图，两条都能用；`orchestrator_round` 保证**没有 bridge 时也在**。
+
+另五个上游新事件（两轮累计）：
+`verify_criterion`（判据的采纳/拒绝/执行 + 前后关系）、
+`self_report`（收尾自述 + `fact_check` 矛盾）、
+**`reuse`**（机械复用性检查，**有否决权**）、
+**`decompose_review`**（拆解合规审查，**有否决权**、`independent=false` 表示模型层未启用）。
+另外 `cycle_end` 多了 **`outcome` / `outcome_reason`** 两个键 ——
+结局四值 `pass` / `fail` / `abstain` / `invalid`，
+**`invalid` 表示"判据或环境自身坏了、这次读数无效"**（不要把它算成模型的失败）。
+`CycleReport` 相应加了 `outcome` / `outcome_reason` / `verdict` / `reuse_checks` /
+`decompose_review` 五个加性字段。
+
+### 4.2 `/profile.runtime` + 交付物字段（P14/P15，**加性**）
+
+契约 `runtime_paths_and_output_contract`（v1.0.32）。**没有删改任何既有键**：
+
+| 事实面 | 变化 | 前端可以怎么用 |
+|---|---|---|
+| `GET /profile` | **加** `runtime` 段 | 显示/记录**运行根 / 工作区根 / 输出根**三个绝对路径；`runtime.project_root` 给任务级目标根的当前状态与 `distinct_from_backend_dir` |
+| `POST /encode` 请求 | **加** `project_root` / `deliverables` | `project_root` = 这次任务要在哪个已有代码库上干活；`deliverables` 声明产出（`["a.txt"]` 或 `{path,sha256?,size?}`） |
+| `POST /run` 请求 | **加** `project_root` | 同上（旧流程那条路径） |
+| `POST /encode` / `/run` 响应 | **加** `runtime` / `project_root` / `deliverables` | `deliverables.actual` 就是**实际产物** `{path, sha256, size}`（用户要的"知道做了什么"） |
+| `CycleReport` | **加** `deliverables` | 已进 `FROZEN_REPORT_KEYS`（只增不减） |
+
+**注意**：这三个根是**进程级**的（可用 `AGENT_RUNTIME_ROOT` / `AGENT_WORKSPACE_DIR` /
+`AGENT_OUTPUT_DIR` 覆盖）；`project_root` 是**任务级**的，只在该次请求期间生效。
+**事件种类数不变（18）**，工具数不变（18），`PHASE_ORDER` 不变，端点路径不变。
 
 ---
 

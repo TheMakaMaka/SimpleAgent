@@ -825,3 +825,382 @@ b187ead v1.19: VERIFY-VACUOUS：自拟验收可以恒真 —— print('PASS') �
 ```
 
 ---
+
+## v1.21 — 2026-09-27 13:34
+
+**改动**：TRANSPARENCY-BACKEND：流程允许模型把考卷换成一张必过的（统筹方对 run_20260927_125647_5a3297 的审查 + 需求文件）。A1：每轮决策依据进事件 orchestrator_round（reasoning + 这一轮打算做什么）——上游刻意不复用前端 bridge 的 orchestrator_decision（两个生产者发同一 kind 会让审计无法判断哪条权威；并附证据说明用户那次该事件缺 reasoning 是旧 bridge 造成的，现行 bridge/hooks.py:306 已经带 reasoning）。B1：判据演化逐条进事件 verify_criterion（action=adopted/rejected/executed + previous_command/previous_passed，由 memory.log_criterion 自动补齐前后关系，调用点不必各自记状态）。B2（用户裁决的行为改动）：换掉一条已执行且失败的判据必须给理由（verify.reason 非空），没给理由不采纳并走显式失败；允许换、但必须看得见。B3（统筹方点名要求不要默默处理）：自拟判据引用 .py 交付物就必须真的调用它——新增 _module_names_for / _called_modules（AST Call + import 别名解析），assert generate_obstacles 这类只断言名字的恒真判据被拒；我判定它与用户选的(2)不冲突（(2)管换判据怎么处理，B3管什么判据算合格），且只做 B2 拦不住 (c)；代价如实写在 OPERATIONS §9.2 与 PENDING C10：.py 只做存在性检查会被拒（调用方判据不受影响），可单独回退第三层。C1：新增 core/self_report.py + SELF_REPORT_SYSTEM，收尾自述 self_report（done/not_done/why/reflections/approach/confidence/open_questions/requirements/claims）进报告字段与事件。C2：fact_check 逐条与机械事实相等比较（交付物是否真在磁盘、verify 是否真通过、check.status 与 lint failed、目标要求缺状态的标未提及）；自述是报告不是门禁（phase/verify/commit 不受影响），拿不到自述记 ok=false+error 显式降级。★ 真调用生效：拿统筹方固定样例重跑同一目标，改动前 judge=assert generate_obstacles→record，改动后 judge=ant_colony.AntColony(...).run()==True→phase=failed detail=NameError: name 'random' is not defined（报告里的 bug 从 np 变成 random，说明判据摸到了真实代码）；事件流 orchestrator_round=20 verify_criterion=31 self_report=1，自述 not_done=[generate_ants 方法] 且把「连续测试验证」留成 unknown 被标未提及。验证：全量单测 35/35（新 test_transparency.py 24 项 + test_self_report.py 19 项）、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量 31/31、文档审查 18/18、真实模型固定样例 6/6、经 HTTP 3/3（HTTP 那次 fact_check 真抓到一条 check-claim-vs-fact：模型声称检查通过而 check.status=skipped）。契约面：事件 13→16、CycleReport 加 self_report、CONTRACT_VERSION 仍 1.1，全 additive。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.21:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.21:"`
+
+**验证**：
+- 全量单测 PASS (35/35)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 31 个 · 测试文件 35 个
+
+**本次提交的文件**：
+```
+4824738 v1.21: TRANSPARENCY-BACKEND：流程允许模型把考卷换成一张必过的（统筹方对 run_20260927_125647_5a3297 的审查 + 需求文件）。A1：每轮决策依据进事件 orchestrator_round（reasoning + 这一轮打算做什么）——上游刻意不复用前端 bridge 的 orchestrator_decision（两个生产者发同一 kind 会让审计无法判断哪条权威；并附证据说明用户那次该事件缺 reasoning 是旧 bridge 造成的，现行 bridge/hooks.py:306 已经带 reasoning）。B1：判据演化逐条进事件 verify_criterion（action=adopted/rejected/executed + previous_command/previous_passed，由 memory.log_criterion 自动补齐前后关系，调用点不必各自记状态）。B2（用户裁决的行为改动）：换掉一条已执行且失败的判据必须给理由（verify.reason 非空），没给理由不采纳并走显式失败；允许换、但必须看得见。B3（统筹方点名要求不要默默处理）：自拟判据引用 .py 交付物就必须真的调用它——新增 _module_names_for / _called_modules（AST Call + import 别名解析），assert generate_obstacles 这类只断言名字的恒真判据被拒；我判定它与用户选的(2)不冲突（(2)管换判据怎么处理，B3管什么判据算合格），且只做 B2 拦不住 (c)；代价如实写在 OPERATIONS §9.2 与 PENDING C10：.py 只做存在性检查会被拒（调用方判据不受影响），可单独回退第三层。C1：新增 core/self_report.py + SELF_REPORT_SYSTEM，收尾自述 self_report（done/not_done/why/reflections/approach/confidence/open_questions/requirements/claims）进报告字段与事件。C2：fact_check 逐条与机械事实相等比较（交付物是否真在磁盘、verify 是否真通过、check.status 与 lint failed、目标要求缺状态的标未提及）；自述是报告不是门禁（phase/verify/commit 不受影响），拿不到自述记 ok=false+error 显式降级。★ 真调用生效：拿统筹方固定样例重跑同一目标，改动前 judge=assert generate_obstacles→record，改动后 judge=ant_colony.AntColony(...).run()==True→phase=failed detail=NameError: name 'random' is not defined（报告里的 bug 从 np 变成 random，说明判据摸到了真实代码）；事件流 orchestrator_round=20 verify_criterion=31 self_report=1，自述 not_done=[generate_ants 方法] 且把「连续测试验证」留成 unknown 被标未提及。验证：全量单测 35/35（新 test_transparency.py 24 项 + test_self_report.py 19 项）、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量 31/31、文档审查 18/18、真实模型固定样例 6/6、经 HTTP 3/3（HTTP 那次 fact_check 真抓到一条 check-claim-vs-fact：模型声称检查通过而 check.status=skipped）。契约面：事件 13→16、CycleReport 加 self_report、CONTRACT_VERSION 仍 1.1，全 additive。
+ CYCLE.md                                     |   2 +-
+ README.md                                    |   3 +-
+ core/coding_cycle.py                         | 170 ++++++++++++
+ core/contract.py                             |  33 ++-
+ core/cycle.py                                |   8 +
+ core/memory.py                               |  67 +++++
+ core/orchestrator.py                         | 197 +++++++++++---
+ core/prompts.py                              |  54 ++++
+ core/self_report.py                          | 248 +++++++++++++++++
+ docs/ARCHITECTURE.md                         |   2 +-
+ docs/CHANGELOG.md                            |  80 ++++++
+ docs/EVALUATION-TRANSPARENCY-BACKEND.md      | 381 +++++++++++++++++++++++++++
+ docs/EVALUATION-VERIFY-VACUOUS.md            |   7 +
+ docs/FRONTEND_CONTRACT.md                    |  13 +-
+ docs/MODULES.md                              |  56 +++-
+ docs/OPERATIONS.md                           | 115 +++++++-
+ docs/PENDING_DECISIONS.md                    |  15 +-
+ tests/README.md                              |   3 +
+ tests/diagnostics/repro_user_run_20260927.py | 174 ++++++++++++
+ tests/unit/test_self_report.py               | 278 +++++++++++++++++++
+ tests/unit/test_transparency.py              | 255 ++++++++++++++++++
+ tests/unit/test_verify_vacuous.py            |   4 +-
+ 22 files changed, 2121 insertions(+), 44 deletions(-)
+```
+
+---
+
+## v1.22 — 2026-09-28 00:16
+
+**改动**：TRANSPARENCY2-BACKEND（P1-P5）。P1 结局四值：新增 core/outcome.py（13 种原因种类 -> pass/fail/abstain/invalid），每个出口由 _end_cycle 显式设置而不是嗅探错误字符串；判据自身坏/环境缺依赖 -> invalid（criterion-broken/environment-missing/wiring），说不出什么叫对/模型 blocked -> abstain；★ 判据来源进判定链：verdict.criterion_trust（caller-authoritative vs model-self-authored）+ criterion_independent，模型自拟判据的通过与调用方判据的通过不再同形（39 条运行里调用方判据 0 条）。顺带修掉终局不发 cycle_end 的缺口。P2 机械复用性（硬否决）：新增 core/reuse_checks.py，五类缺陷里三类做成阻塞（调用了不存在的符号、用了没导入 F821、按旧签名传参）—— 实测那两条判据（ant_colony.generate_obstacles / obstacle_generator.generate_obstacle_grid）被抓住；重复符号/未用导入/命名不一致只做警告（理由与代价写在评估文档 §7，提升只需改 BLOCKING_KINDS 一行，PENDING C12）；lint 从非阻塞变成必然崩的三类阻塞（pipeline.py:157 那句注释的后果实测两次）。P3 拆解合规关卡：新增 core/decompose_review.py，八条原则（6 条完全机械 + P5/P6 机械近似 + undecidable 第三态），原则本体进契约 core/contract.py::DECOMPOSE_PRINCIPLES（L1：执行方只读）；★ 逐字复刻用户那次运行的 plan 判不通过（违反 P3），Run A 型分解违反 P3/P4/P6/P7 四条全被抓，合规分解通过（不会一律报红）；否决权真的生效（DECOMPOSE_GATE=block），默认 warn 因为阈值待基线校准 + 7B 必违反（PENDING C11）。P4 架构事实层：tools/arch.py 加 render_architecture_view（带 derived-from 标记），新增会红的检查 hand-written-architecture-doc（手写架构文档被拦、渲染件放行）。P5 reviewer 定位写死建议性 + 指明否决权在机械层（不动语义）。契约面：事件 16->18（reuse/decompose_review 新增，cycle_end 加 outcome/outcome_reason），CycleReport +5 字段，CONTRACT_VERSION 仍 1.1，全 additive。验证：全量单测 38/38（新 test_outcome 18 + test_reuse_checks 18 + test_decompose_review 19）、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量 31/31、文档审查 18/18；真实模型固定样例 6/6，那次运行里 decompose_review 判不通过（violated=[P3,P4,P6]、independent=false）、cycle_end 带 outcome=fail、reuse 事件进流、自述 fact_check 又抓到一次 lint-failed-not-disclosed。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.22:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.22:"`
+
+**验证**：
+- 全量单测 PASS (38/38)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 34 个 · 测试文件 38 个
+
+**本次提交的文件**：
+```
+933b515 v1.22: TRANSPARENCY2-BACKEND（P1-P5）。P1 结局四值：新增 core/outcome.py（13 种原因种类 -> pass/fail/abstain/invalid），每个出口由 _end_cycle 显式设置而不是嗅探错误字符串；判据自身坏/环境缺依赖 -> invalid（criterion-broken/environment-missing/wiring），说不出什么叫对/模型 blocked -> abstain；★ 判据来源进判定链：verdict.criterion_trust（caller-authoritative vs model-self-authored）+ criterion_independent，模型自拟判据的通过与调用方判据的通过不再同形（39 条运行里调用方判据 0 条）。顺带修掉终局不发 cycle_end 的缺口。P2 机械复用性（硬否决）：新增 core/reuse_checks.py，五类缺陷里三类做成阻塞（调用了不存在的符号、用了没导入 F821、按旧签名传参）—— 实测那两条判据（ant_colony.generate_obstacles / obstacle_generator.generate_obstacle_grid）被抓住；重复符号/未用导入/命名不一致只做警告（理由与代价写在评估文档 §7，提升只需改 BLOCKING_KINDS 一行，PENDING C12）；lint 从非阻塞变成必然崩的三类阻塞（pipeline.py:157 那句注释的后果实测两次）。P3 拆解合规关卡：新增 core/decompose_review.py，八条原则（6 条完全机械 + P5/P6 机械近似 + undecidable 第三态），原则本体进契约 core/contract.py::DECOMPOSE_PRINCIPLES（L1：执行方只读）；★ 逐字复刻用户那次运行的 plan 判不通过（违反 P3），Run A 型分解违反 P3/P4/P6/P7 四条全被抓，合规分解通过（不会一律报红）；否决权真的生效（DECOMPOSE_GATE=block），默认 warn 因为阈值待基线校准 + 7B 必违反（PENDING C11）。P4 架构事实层：tools/arch.py 加 render_architecture_view（带 derived-from 标记），新增会红的检查 hand-written-architecture-doc（手写架构文档被拦、渲染件放行）。P5 reviewer 定位写死建议性 + 指明否决权在机械层（不动语义）。契约面：事件 16->18（reuse/decompose_review 新增，cycle_end 加 outcome/outcome_reason），CycleReport +5 字段，CONTRACT_VERSION 仍 1.1，全 additive。验证：全量单测 38/38（新 test_outcome 18 + test_reuse_checks 18 + test_decompose_review 19）、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量 31/31、文档审查 18/18；真实模型固定样例 6/6，那次运行里 decompose_review 判不通过（violated=[P3,P4,P6]、independent=false）、cycle_end 带 outcome=fail、reuse 事件进流、自述 fact_check 又抓到一次 lint-failed-not-disclosed。
+ CYCLE.md                                 |   2 +-
+ README.md                                |   3 +-
+ core/coding_cycle.py                     | 173 +++++++++++--
+ core/config.py                           |  11 +-
+ core/contract.py                         |  63 ++++-
+ core/cycle.py                            |  21 ++
+ core/decompose_review.py                 | 280 +++++++++++++++++++++
+ core/outcome.py                          | 109 +++++++++
+ core/pipeline.py                         | 136 ++++++++++-
+ core/reuse_checks.py                     | 405 +++++++++++++++++++++++++++++++
+ docs/ARCHITECTURE.md                     |   2 +-
+ docs/CHANGELOG.md                        |  88 +++++++
+ docs/EVALUATION-TRANSPARENCY2-BACKEND.md | 338 ++++++++++++++++++++++++++
+ docs/FRONTEND_CONTRACT.md                |  13 +-
+ docs/MODULES.md                          | 108 ++++++++-
+ docs/OPERATIONS.md                       |  45 +++-
+ docs/PENDING_DECISIONS.md                |  22 ++
+ tests/README.md                          |   3 +
+ tests/unit/test_decompose_review.py      | 268 ++++++++++++++++++++
+ tests/unit/test_outcome.py               | 232 ++++++++++++++++++
+ tests/unit/test_reuse_checks.py          | 236 ++++++++++++++++++
+ tools/arch.py                            |  43 ++++
+ 22 files changed, 2574 insertions(+), 27 deletions(-)
+```
+
+---
+
+## v1.23 — 2026-09-28 01:13
+
+**改动**：TRANSPARENCY3-BACKEND（P6/P7/P8，统筹方能力基线复验新发现）。P6 判词必须描述产物（与 FIX-VERIFY-WIRING 同族：被验证的对象必须就是被交付的对象）：★ 机制我定位到了并确定性复现 —— tools/verify.py 本身是对的（独立子进程 + cwd=workspace + PYTHONPATH，不是 cwd 也不是进程内 sys.modules 复用），但子进程会读 __pycache__/*.pyc，而 .pyc 失效判据是源码 (mtime,size)，本项目回退/快照用 shutil.copy2 保留原 mtime ⇒ 极易凑成一致 ⇒ import 执行旧代码（实测：改写成同长度的另一版并还原 mtime，不清缓存 import 得到旧值 'A'，清掉 __pycache__ 得到 'B'）。修法两条互补：① run_verify 验前清 __pycache__ + 记内容哈希 + 明确 cwd，tools/verify.py 加 -B 与 PYTHONDONTWRITEBYTECODE=1（清不掉就显式记 cache_warning）；② 打检查点之前重取一次最终产物哈希，对不上则不打检查点、outcome_kind=artifact-mismatch ⇒ 结局 invalid（读数无效，不是模型不行）。报告与 verify 事件都能读到 artifact_hashes（验证时）/artifact_hashes_final（交付时）/cwd，两者可比。P7 符号表收模块级赋值：app = Flask(__name__) 被判『缺少符号 app』是假失败（根因 symbol_index 只访问 FunctionDef/AsyncFunctionDef/ClassDef，没有 Assign/AnnAssign）—— 它直接毁掉一个能力轴的读数；新增 visit_Assign/visit_AnnAssign（kind=variable，含 CONFIG: dict = {}）与 raw_module_bindings() 作为独立第二意见，于是『真没有』(symbol-missing, error, 带 文件:行) 与『有但我没索引到』(symbol-unindexed, warning, 不拦路) 可区分。P8 decompose_review 事件加 mode(off/warn/block) 与 applied，否则 warn 模式下 passed=false 会被读成『审查未通过而运行通过』。验证：全量单测 39/39（新 test_artifact_binding.py 24 项，含缓存陈旧的确定性复现与修复对照）、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量 31/31、文档审查 18/18；真实模型固定样例 6/6 且这次 phase=record，事件里 verify.artifact_hashes={'obstacle_generator.py':'f13e0b5d292d'}、cwd 有值、decompose_review 带 mode=warn/applied=False、cycle_end outcome=pass。契约面：事件种类数不变（18；勘误：先前写 19），只给 verify/decompose_review 加键，CONTRACT_VERSION 仍 1.1。新增待确认 C13（清缓存失败是否升级为 invalid）与 C14（历史 fail 数字是否重跑 —— 判断权在统筹方）。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.23:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.23:"`
+
+**验证**：
+- 全量单测 PASS (39/39)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 34 个 · 测试文件 39 个
+
+**本次提交的文件**：
+```
+d6dce14 v1.23: TRANSPARENCY3-BACKEND（P6/P7/P8，统筹方能力基线复验新发现）。P6 判词必须描述产物（与 FIX-VERIFY-WIRING 同族：被验证的对象必须就是被交付的对象）：★ 机制我定位到了并确定性复现 —— tools/verify.py 本身是对的（独立子进程 + cwd=workspace + PYTHONPATH，不是 cwd 也不是进程内 sys.modules 复用），但子进程会读 __pycache__/*.pyc，而 .pyc 失效判据是源码 (mtime,size)，本项目回退/快照用 shutil.copy2 保留原 mtime ⇒ 极易凑成一致 ⇒ import 执行旧代码（实测：改写成同长度的另一版并还原 mtime，不清缓存 import 得到旧值 'A'，清掉 __pycache__ 得到 'B'）。修法两条互补：① run_verify 验前清 __pycache__ + 记内容哈希 + 明确 cwd，tools/verify.py 加 -B 与 PYTHONDONTWRITEBYTECODE=1（清不掉就显式记 cache_warning）；② 打检查点之前重取一次最终产物哈希，对不上则不打检查点、outcome_kind=artifact-mismatch ⇒ 结局 invalid（读数无效，不是模型不行）。报告与 verify 事件都能读到 artifact_hashes（验证时）/artifact_hashes_final（交付时）/cwd，两者可比。P7 符号表收模块级赋值：app = Flask(__name__) 被判『缺少符号 app』是假失败（根因 symbol_index 只访问 FunctionDef/AsyncFunctionDef/ClassDef，没有 Assign/AnnAssign）—— 它直接毁掉一个能力轴的读数；新增 visit_Assign/visit_AnnAssign（kind=variable，含 CONFIG: dict = {}）与 raw_module_bindings() 作为独立第二意见，于是『真没有』(symbol-missing, error, 带 文件:行) 与『有但我没索引到』(symbol-unindexed, warning, 不拦路) 可区分。P8 decompose_review 事件加 mode(off/warn/block) 与 applied，否则 warn 模式下 passed=false 会被读成『审查未通过而运行通过』。验证：全量单测 39/39（新 test_artifact_binding.py 24 项，含缓存陈旧的确定性复现与修复对照）、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量 31/31、文档审查 18/18；真实模型固定样例 6/6 且这次 phase=record，事件里 verify.artifact_hashes={'obstacle_generator.py':'f13e0b5d292d'}、cwd 有值、decompose_review 带 mode=warn/applied=False、cycle_end outcome=pass。契约面：事件种类数不变（18；勘误：先前写 19），只给 verify/decompose_review 加键，CONTRACT_VERSION 仍 1.1。新增待确认 C13（清缓存失败是否升级为 invalid）与 C14（历史 fail 数字是否重跑 —— 判断权在统筹方）。
+ CYCLE.md                                 |   2 +-
+ README.md                                |   3 +-
+ core/coding_cycle.py                     |  40 +++++
+ core/contract.py                         |  17 +-
+ core/manifest.py                         |  44 ++++-
+ core/memory.py                           |  13 ++
+ core/orchestrator.py                     |   8 +-
+ core/outcome.py                          |   4 +
+ core/pipeline.py                         |  62 ++++++-
+ core/symbol_index.py                     |  90 ++++++++++
+ docs/ARCHITECTURE.md                     |   2 +-
+ docs/CHANGELOG.md                        |  67 +++++++
+ docs/EVALUATION-TRANSPARENCY3-BACKEND.md | 275 +++++++++++++++++++++++++++++
+ docs/MODULES.md                          |  59 ++++++-
+ docs/OPERATIONS.md                       |  36 +++-
+ docs/PENDING_DECISIONS.md                |  20 +++
+ tests/unit/test_artifact_binding.py      | 290 +++++++++++++++++++++++++++++++
+ tools/verify.py                          |   7 +-
+ 18 files changed, 1017 insertions(+), 22 deletions(-)
+```
+
+---
+
+## v1.24 — 2026-09-28 22:27
+
+**改动**：REUSE-SYMBOL-SCOPE（P7b）：复用层符号反查的**名字撞车**。缺陷（能力基线 T9 真实运行 run_20260928_221011_7b7bfc）：模型交付的 app.py 完全正确（from flask import Flask / app = Flask(__name__) / @app.route('/ping')），却被复用层判 blocking『app.py 引用了不存在的符号 app.route —— app 里只有 [app, ping]』，因为 owner=app 直接进了模块反查，而模型的文件恰好也叫 app.py（by_stem 兜底按文件名主干命中同名模块）；复用层有硬否决权 ⇒ 正确代码被否决、phase=failed，更糟的是模型在 self_report 里写下『静态检查未通过』——工具把正确判成错的还让模型去反思它。根因：引用反查没有作用域概念（_bound_names 早在同一文件里但形式 1 没用它——又一次机制在没接上）。修法（三条顺序，不动 BLOCKING_KINDS）：① owner 根名是**非 import 绑定**（变量/参数/with as/for/except as/推导式/def|class 名）⇒ 对象属性、本地 AST 索引不可知 ⇒ 不判；② 根名是 import 绑定 ⇒ 照旧模块反查（import t1 后 t1.bar 仍红）；③ 根名既非绑定也非内置 ⇒ undefined-name（阻塞，np.array 缺 import 属此类）；附：文件里有 from x import * ⇒ 该文件不做未定义名判定。★ 同时满足统筹方的两条缺一不可的验收：① A/B 两种工作区结论一致且都为 0（新判据版探针 tests/diagnostics/probe_symbol_scope.py 14/14，把『结论与工作区无关』写成断言）；② 反空洞——np.array 缺 import / from mylib import f（无 f）/ t1.bar（只有 foo）三条**必须仍然红**，机械输出已贴进评估文档 §4.1。顺带项：v1.22 曾把事件数写成 19（把 cycle_end 新增的两个 payload 键当成新事件），实测 len(EVENTS)=18 —— 已勘误 VERSIONS/FRONTEND_CONTRACT/CHANGELOG（历史条目只加勘误注不重排），并给 test_doc_invariants 加**第 10 组**门禁：文档里写的『上游 N 种事件』必须等于 len(contract.EVENTS)，且『一条都没扫到』本身判红（防空转）。验证：全量单测 40/40（新 test_reuse_scope.py 24 项）、探针 14/14、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量（31+2）/33、文档审查 18/18。契约面零改动：事件仍 18 种、CONTRACT_VERSION 仍 1.1 —— 本次只调判据作用域，不动否决强度。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.24:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.24:"`
+
+**验证**：
+- 全量单测 PASS (40/40)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 34 个 · 测试文件 40 个
+
+**本次提交的文件**：
+```
+bbfb54e v1.24: REUSE-SYMBOL-SCOPE（P7b）：复用层符号反查的**名字撞车**。缺陷（能力基线 T9 真实运行 run_20260928_221011_7b7bfc）：模型交付的 app.py 完全正确（from flask import Flask / app = Flask(__name__) / @app.route('/ping')），却被复用层判 blocking『app.py 引用了不存在的符号 app.route —— app 里只有 [app, ping]』，因为 owner=app 直接进了模块反查，而模型的文件恰好也叫 app.py（by_stem 兜底按文件名主干命中同名模块）；复用层有硬否决权 ⇒ 正确代码被否决、phase=failed，更糟的是模型在 self_report 里写下『静态检查未通过』——工具把正确判成错的还让模型去反思它。根因：引用反查没有作用域概念（_bound_names 早在同一文件里但形式 1 没用它——又一次机制在没接上）。修法（三条顺序，不动 BLOCKING_KINDS）：① owner 根名是**非 import 绑定**（变量/参数/with as/for/except as/推导式/def|class 名）⇒ 对象属性、本地 AST 索引不可知 ⇒ 不判；② 根名是 import 绑定 ⇒ 照旧模块反查（import t1 后 t1.bar 仍红）；③ 根名既非绑定也非内置 ⇒ undefined-name（阻塞，np.array 缺 import 属此类）；附：文件里有 from x import * ⇒ 该文件不做未定义名判定。★ 同时满足统筹方的两条缺一不可的验收：① A/B 两种工作区结论一致且都为 0（新判据版探针 tests/diagnostics/probe_symbol_scope.py 14/14，把『结论与工作区无关』写成断言）；② 反空洞——np.array 缺 import / from mylib import f（无 f）/ t1.bar（只有 foo）三条**必须仍然红**，机械输出已贴进评估文档 §4.1。顺带项：v1.22 曾把事件数写成 19（把 cycle_end 新增的两个 payload 键当成新事件），实测 len(EVENTS)=18 —— 已勘误 VERSIONS/FRONTEND_CONTRACT/CHANGELOG（历史条目只加勘误注不重排），并给 test_doc_invariants 加**第 10 组**门禁：文档里写的『上游 N 种事件』必须等于 len(contract.EVENTS)，且『一条都没扫到』本身判红（防空转）。验证：全量单测 40/40（新 test_reuse_scope.py 24 项）、探针 14/14、契约符合性 44/44、前端契约 25/25、文档一致性 35/35、不变量（31+2）/33、文档审查 18/18。契约面零改动：事件仍 18 种、CONTRACT_VERSION 仍 1.1 —— 本次只调判据作用域，不动否决强度。
+ CYCLE.md                                |   2 +-
+ README.md                               |   3 +-
+ core/reuse_checks.py                    |  57 +++++++
+ docs/ARCHITECTURE.md                    |   2 +-
+ docs/CHANGELOG.md                       |  69 +++++++-
+ docs/EVALUATION-REUSE-SYMBOL-SCOPE.md   | 279 ++++++++++++++++++++++++++++++++
+ docs/FRONTEND_CONTRACT.md               |   2 +-
+ docs/MODULES.md                         |  25 ++-
+ docs/OPERATIONS.md                      |  18 ++-
+ docs/VERSIONS.md                        |   8 +-
+ tests/README.md                         |   2 +
+ tests/diagnostics/probe_symbol_scope.py | 126 +++++++++++++++
+ tests/unit/test_doc_invariants.py       |  56 ++++++-
+ tests/unit/test_reuse_scope.py          | 231 ++++++++++++++++++++++++++
+ 14 files changed, 867 insertions(+), 13 deletions(-)
+```
+
+---
+
+## v1.25 — 2026-10-03 12:25
+
+**改动**：P9 TOOLCALL-NORM：工具调用规范化 + 工具产出检验（用户 2026-10-03 架构方向，契约 1.0.30 tool_call_contract；本轮 round_id R-69ec731ff3）。根因（统筹方实测）：18 个工具全部未声明 additionalProperties ⇒ JSON Schema 默认任意键都收，传错键不报错、被静默忽略 —— 「每次生成的东西不一样」能走到工具的机制性原因。修法四件：① 18 个工具 parameters 一律显式 additionalProperties:false（无参工具同样声明）+ 可选参数补 default；② 新增 tools/tool_contract.py：声明式别名表 ALIASES（write_file 的 code→content 等实测形状）+ normalize_args 五步（别名归一→未知键结构化拒绝→类型强制→必需键→缺省填充），未知键回灌 {ok:false,kind:error,error:{code,message,hint}} 并列出可用键与已知别名；③ validate_result 校验结果信封 {ok,kind,data,error}（ok=false 必填 error、ok=true 必填 data），旧字符串结果仍可读 —— is_error_result() 回退路径原样保留、语义未改；④ 接线 core/worker.py::_invoke（_parse_args 之后、执行之前），去重/兜底/归档三条旁路走 _args_for_read 归一后的实参。顺带修一个 U- 类：check_and_run 的 expect_exit 一直是真实参数却没写进模型可见 schema，收紧形状时补上，否则会被未知键判据拒掉。★ 反空洞：探针临时摘掉 read_file 的 additionalProperties ⇒ 门禁判据立刻报 [read_file]，恢复回绿；传未声明键时工具函数一次都没执行（间谍工具证明不是接受后忽略）；半成品信封被 reject。验证：统筹方门禁 tool-contract-lint.py 由 TOOLLINT state=fail problems=1 tools=18 转 state=ok problems=0 tools=18；新增 tests/unit/test_tool_contract.py 40/40、tests/diagnostics/probe_tool_contract.py 全 PASS、全量单测 41/41、契约符合性 44/44、前端契约 25/25、文档一致性 36/36、文档不变量 (31+2)/33、文档审查 18/18。接口面零破坏：事件/阶段/CycleReport/Snapshot/Event/端点/版本轴均未改，TOOLS_MAP 顶层键未改（只改 parameters 内部），/profile.contract 新增 tool_call_contract（别名表+audit）属加性。契约目录只读未动；对侧仓库与集成工作区未写入。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.25:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.25:"`
+
+**验证**：
+- 全量单测 PASS (41/41)
+- 文档一致性 PASS (36/36)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 34 个 · 测试文件 41 个
+
+**本次提交的文件**：
+```
+fb248b1 v1.25: P9 TOOLCALL-NORM：工具调用规范化 + 工具产出检验（用户 2026-10-03 架构方向，契约 1.0.30 tool_call_contract；本轮 round_id R-69ec731ff3）。根因（统筹方实测）：18 个工具全部未声明 additionalProperties ⇒ JSON Schema 默认任意键都收，传错键不报错、被静默忽略 —— 「每次生成的东西不一样」能走到工具的机制性原因。修法四件：① 18 个工具 parameters 一律显式 additionalProperties:false（无参工具同样声明）+ 可选参数补 default；② 新增 tools/tool_contract.py：声明式别名表 ALIASES（write_file 的 code→content 等实测形状）+ normalize_args 五步（别名归一→未知键结构化拒绝→类型强制→必需键→缺省填充），未知键回灌 {ok:false,kind:error,error:{code,message,hint}} 并列出可用键与已知别名；③ validate_result 校验结果信封 {ok,kind,data,error}（ok=false 必填 error、ok=true 必填 data），旧字符串结果仍可读 —— is_error_result() 回退路径原样保留、语义未改；④ 接线 core/worker.py::_invoke（_parse_args 之后、执行之前），去重/兜底/归档三条旁路走 _args_for_read 归一后的实参。顺带修一个 U- 类：check_and_run 的 expect_exit 一直是真实参数却没写进模型可见 schema，收紧形状时补上，否则会被未知键判据拒掉。★ 反空洞：探针临时摘掉 read_file 的 additionalProperties ⇒ 门禁判据立刻报 [read_file]，恢复回绿；传未声明键时工具函数一次都没执行（间谍工具证明不是接受后忽略）；半成品信封被 reject。验证：统筹方门禁 tool-contract-lint.py 由 TOOLLINT state=fail problems=1 tools=18 转 state=ok problems=0 tools=18；新增 tests/unit/test_tool_contract.py 40/40、tests/diagnostics/probe_tool_contract.py 全 PASS、全量单测 41/41、契约符合性 44/44、前端契约 25/25、文档一致性 36/36、文档不变量 (31+2)/33、文档审查 18/18。接口面零破坏：事件/阶段/CycleReport/Snapshot/Event/端点/版本轴均未改，TOOLS_MAP 顶层键未改（只改 parameters 内部），/profile.contract 新增 tool_call_contract（别名表+audit）属加性。契约目录只读未动；对侧仓库与集成工作区未写入。
+ CYCLE.md                                 |   2 +-
+ README.md                                |   3 +-
+ core/contract.py                         |  12 +
+ core/worker.py                           |  73 +++--
+ docs/ARCHITECTURE.md                     |   2 +-
+ docs/CHANGELOG.md                        |  62 +++++
+ docs/EVALUATION-TOOLCALL-NORM.md         | 348 +++++++++++++++++++++++
+ docs/FRONTEND_CONTRACT.md                |  16 ++
+ docs/MODULES.md                          |  53 +++-
+ docs/OPERATIONS.md                       |   3 +-
+ tests/README.md                          |   2 +
+ tests/diagnostics/probe_tool_contract.py | 170 ++++++++++++
+ tests/unit/test_tool_contract.py         | 267 ++++++++++++++++++
+ tools/__init__.py                        |  25 ++
+ tools/arch.py                            |   4 +
+ tools/basic.py                           |  11 +-
+ tools/code_checks.py                     |  10 +-
+ tools/docs.py                            |   2 +
+ tools/files.py                           |   2 +
+ tools/net.py                             |   1 +
+ tools/parse.py                           |   1 +
+ tools/python_exec.py                     |   1 +
+ tools/quality.py                         |   1 +
+ tools/reflect.py                         |   2 +
+ tools/tool_contract.py                   | 454 +++++++++++++++++++++++++++++++
+ tools/verify.py                          |  11 +-
+ 26 files changed, 1514 insertions(+), 24 deletions(-)
+```
+
+---
+
+## v1.26 — 2026-10-03 13:14
+
+**改动**：P9 ENVELOPE-WIRING（D33 追加验收 ③ 后半 + D30 收口；round_id R-4fb8a623b8）。缺陷（统筹方独立复验 v1.25，不看自述）：产出侧只把机制建好了 —— validate_result/_envelope_problems/audit 都在，但 ENVELOPE_TOOLS 是空集 ⇒ 18 个工具里没有一个的结果会被校验，audit().envelope_tools=[]，他门禁的不变式 F（envelope_tools 非空）因此重新变红。这就是本项目反复栽的形状：机制存在 != 机制接上了。修法五件：① ENVELOPE_TOOLS 由空集合改为登记表（工具->结果类别 kind），现役非空 check_and_run->verification；② 新增 build_envelope()（唯一一处装配信封 {ok,kind,data,error}）+ _error_object()（错误信封的 code/message 从 error/parsed_error/message 抽真实失败，第一版回灌了占位文案『工具报错』已修）+ envelope_of()/unwrap_payload()（兼容旁路取回原产出）；③ 接线 core/worker.py::_invoke —— 先套信封、再检验信封本体（顺序反了会把工具自己的中间形状 {ok,syntax_passed} 判成不合规信封，实测踩到）；_maybe_artifact 用 envelope_of 取回 data；④ 分阶段迁移判据公开声明（STAGED_OUT_OF_ENVELOPE + envelope_policy -> /profile 的 result_envelope.staged）：其余 17 个逐个按产出形状登记，run_lint/check_syntax 因 pipeline.run_check 直调读 ok 而先动读法，新增工具必须直接登记；⑤ audit() 加 envelope_tool_count/bad_envelope_kinds，describe_contract 公开登记面与 built_by。反空洞（三条，机械输出已贴评估文档 §4.1）：摘掉登记 => envelope_tools 立刻变空 且 Worker 同时退回旧形状（机制与声明同源）；半成品信封 => reject + tool-result-invalid；错误信封 error.code=AssertionError/message=boom 而 data.parsed_error（frames/category/exit_code）仍完整可读 —— 信封是分类不是丢事实。D30：除 v1.24 已勘误的事件数外，又扫出同族第二处 —— docs/PENDING_DECISIONS.md 的 upstream_event_kinds 写『当前 13 个』实测 18，已改正；并把 test_doc_invariants 第 10 组补硬：新增 upstream_event_kinds（当前 N 个） 写法与 PENDING_DECISIONS 扫描面，另加反向（合成『上游 999 种事件』必须被判不一致）证明判据抓得住；第 10 组并进主汇总避免两个『通过 N/M』被 backup 抓错。验证：统筹方门禁 tool-contract-lint.py 由 TOOLLINT state=fail problems=1 tools=18（登记 0）转 state=ok problems=0 tools=18（登记 1）；统筹方独立验收 test_tool_norm_acceptance.py 11/11（含他自己的门禁有牙齿对照 0->1->0）；新增 tests/unit/test_tool_envelope.py 35/35；test_tool_contract 40/40；probe_tool_contract 扩到五段全 PASS；全量单测 42/42；契约符合性 44/44、前端契约 25/25、文档一致性 35/35、文档不变量 35/35、文档审查 18/18（数字见 VERSIONS v1.26）。行尾纪律（本轮真踩了一次，已记进评估文档 §3.3）：MODULES/OPERATIONS 是 git 的 -text 文件，第一版用编辑器改，新块被写成另一种行尾导致 numstat 从真实的 34/7、27/0 膨胀到 113/86、73/46；已还原并改字节级替换，现 bare LF=0。接口面零破坏：事件/阶段/CycleReport/Snapshot/Event/端点/版本轴/TOOLS_MAP 顶层键均未改，未登记工具产出原样返回（is_error_result 回退路径与 pipeline.run_check 读法未动），/profile.contract.result_envelope 新增 envelope_tool_count/built_by/staged 属加性。契约目录只读未动；对侧仓库与集成工作区未写入（只只读运行其门禁与验收脚本）。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.26:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.26:"`
+
+**验证**：
+- 全量单测 PASS (42/42)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 34 个 · 测试文件 42 个
+
+**本次提交的文件**：
+```
+4697b2b v1.26: P9 ENVELOPE-WIRING（D33 追加验收 ③ 后半 + D30 收口；round_id R-4fb8a623b8）。缺陷（统筹方独立复验 v1.25，不看自述）：产出侧只把机制建好了 —— validate_result/_envelope_problems/audit 都在，但 ENVELOPE_TOOLS 是空集 ⇒ 18 个工具里没有一个的结果会被校验，audit().envelope_tools=[]，他门禁的不变式 F（envelope_tools 非空）因此重新变红。这就是本项目反复栽的形状：机制存在 != 机制接上了。修法五件：① ENVELOPE_TOOLS 由空集合改为登记表（工具->结果类别 kind），现役非空 check_and_run->verification；② 新增 build_envelope()（唯一一处装配信封 {ok,kind,data,error}）+ _error_object()（错误信封的 code/message 从 error/parsed_error/message 抽真实失败，第一版回灌了占位文案『工具报错』已修）+ envelope_of()/unwrap_payload()（兼容旁路取回原产出）；③ 接线 core/worker.py::_invoke —— 先套信封、再检验信封本体（顺序反了会把工具自己的中间形状 {ok,syntax_passed} 判成不合规信封，实测踩到）；_maybe_artifact 用 envelope_of 取回 data；④ 分阶段迁移判据公开声明（STAGED_OUT_OF_ENVELOPE + envelope_policy -> /profile 的 result_envelope.staged）：其余 17 个逐个按产出形状登记，run_lint/check_syntax 因 pipeline.run_check 直调读 ok 而先动读法，新增工具必须直接登记；⑤ audit() 加 envelope_tool_count/bad_envelope_kinds，describe_contract 公开登记面与 built_by。反空洞（三条，机械输出已贴评估文档 §4.1）：摘掉登记 => envelope_tools 立刻变空 且 Worker 同时退回旧形状（机制与声明同源）；半成品信封 => reject + tool-result-invalid；错误信封 error.code=AssertionError/message=boom 而 data.parsed_error（frames/category/exit_code）仍完整可读 —— 信封是分类不是丢事实。D30：除 v1.24 已勘误的事件数外，又扫出同族第二处 —— docs/PENDING_DECISIONS.md 的 upstream_event_kinds 写『当前 13 个』实测 18，已改正；并把 test_doc_invariants 第 10 组补硬：新增 upstream_event_kinds（当前 N 个） 写法与 PENDING_DECISIONS 扫描面，另加反向（合成『上游 999 种事件』必须被判不一致）证明判据抓得住；第 10 组并进主汇总避免两个『通过 N/M』被 backup 抓错。验证：统筹方门禁 tool-contract-lint.py 由 TOOLLINT state=fail problems=1 tools=18（登记 0）转 state=ok problems=0 tools=18（登记 1）；统筹方独立验收 test_tool_norm_acceptance.py 11/11（含他自己的门禁有牙齿对照 0->1->0）；新增 tests/unit/test_tool_envelope.py 35/35；test_tool_contract 40/40；probe_tool_contract 扩到五段全 PASS；全量单测 42/42；契约符合性 44/44、前端契约 25/25、文档一致性 35/35、文档不变量 35/35、文档审查 18/18（数字见 VERSIONS v1.26）。行尾纪律（本轮真踩了一次，已记进评估文档 §3.3）：MODULES/OPERATIONS 是 git 的 -text 文件，第一版用编辑器改，新块被写成另一种行尾导致 numstat 从真实的 34/7、27/0 膨胀到 113/86、73/46；已还原并改字节级替换，现 bare LF=0。接口面零破坏：事件/阶段/CycleReport/Snapshot/Event/端点/版本轴/TOOLS_MAP 顶层键均未改，未登记工具产出原样返回（is_error_result 回退路径与 pipeline.run_check 读法未动），/profile.contract.result_envelope 新增 envelope_tool_count/built_by/staged 属加性。契约目录只读未动；对侧仓库与集成工作区未写入（只只读运行其门禁与验收脚本）。
+ CYCLE.md                                 |   2 +-
+ README.md                                |   3 +-
+ core/prompts.py                          |   5 +-
+ core/worker.py                           |  34 ++-
+ docs/ARCHITECTURE.md                     |   2 +-
+ docs/CHANGELOG.md                        |  85 +++++++
+ docs/EVALUATION-ENVELOPE-WIRING.md       | 386 +++++++++++++++++++++++++++++++
+ docs/MODULES.md                          |  43 +++-
+ docs/OPERATIONS.md                       |  29 ++-
+ docs/PENDING_DECISIONS.md                |   5 +-
+ tests/README.md                          |   3 +-
+ tests/diagnostics/probe_tool_contract.py |  74 +++++-
+ tests/unit/test_doc_invariants.py        |  61 +++--
+ tests/unit/test_tool_contract.py         |   8 +-
+ tests/unit/test_tool_envelope.py         | 230 ++++++++++++++++++
+ tools/__init__.py                        |  10 +-
+ tools/tool_contract.py                   | 203 +++++++++++++++-
+ 17 files changed, 1121 insertions(+), 62 deletions(-)
+```
+
+---
+
+## v1.27 — 2026-10-03 15:42
+
+**改动**：P14+P15+P13+P11（round_id R-8b28b25a1f）：① 新增 core/runtime.py —— 运行根/工作区根/输出根三个互不混淆的绝对路径（/profile.runtime 暴露且保证存在；AGENT_RUNTIME_ROOT/AGENT_WORKSPACE_DIR/AGENT_OUTPUT_DIR 可覆盖），输出根与工作区根分开；② 任务级目标项目根 project_root（ContextVar，/encode 与 /run 逐次给、退出即还原），六个文件/结构工具与 check/verify 一律以它为根，outputs/ 前缀指向输出根，越界写返回结构化 out-of-scope-write（含 allowed_roots，且文件真的没写出去）；与 AGENT_BACKEND_DIR 语义分离并给 distinct_from_backend_dir 机判字段；③ 交付物声明 {path,sha256?,size?}：声明了必须存在且哈希一致否则 delivery-gap/fail，CycleReport.deliverables 与 /encode 响应回报实际产物 {path,sha256,size}；④ P13 归因看 report.verify.source：caller 的坏判据才记 invalid/criterion-broken，模型自拟走已现成的 delivery-gap/fail（方向是收紧）；⑤ P11 结构地图可信化：build_index_report 给出 indexed/skipped/truncated + skipped 逐条理由（non-python/parse-failed/permission-denied/skip-dir/over-limit）+ 每文件 sha256 + generated_at + root + 反向索引，get_architecture/get_module/find_symbol 只加不减。新增四个单测（P15 32 项 / P14 15 项 / P13 13 项 / P11 16 项）+ 五段探针 probe_output_and_map.py（21 项）；test_outcome 按 P13 改判并补 caller 的 invalid（两向都在红）；行尾门禁第 9 组本轮抓到 arch.py/files.py 被翻成 LF 已按索引还原。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/端点/版本轴未动，TOOLS_MAP 顶层键未改，/profile 加 runtime、/encode 请求响应加字段、CycleReport 加 deliverables（进 FROZEN_REPORT_KEYS）。D30：VERSIONS 的 v1.22 早已是 16->18，本轮给仍写着 16→19 的 EVALUATION-TRANSPARENCY2-BACKEND §9 加勘误注（历史条目不重排）。契约目录只读；对侧仓库与集成工作区未写入。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.27:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.27:"`
+
+**验证**：
+- 全量单测 PASS (46/46)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 35 个 · 测试文件 46 个
+
+**本次提交的文件**：
+```
+9e990f8 v1.27: P14+P15+P13+P11（round_id R-8b28b25a1f）：① 新增 core/runtime.py —— 运行根/工作区根/输出根三个互不混淆的绝对路径（/profile.runtime 暴露且保证存在；AGENT_RUNTIME_ROOT/AGENT_WORKSPACE_DIR/AGENT_OUTPUT_DIR 可覆盖），输出根与工作区根分开；② 任务级目标项目根 project_root（ContextVar，/encode 与 /run 逐次给、退出即还原），六个文件/结构工具与 check/verify 一律以它为根，outputs/ 前缀指向输出根，越界写返回结构化 out-of-scope-write（含 allowed_roots，且文件真的没写出去）；与 AGENT_BACKEND_DIR 语义分离并给 distinct_from_backend_dir 机判字段；③ 交付物声明 {path,sha256?,size?}：声明了必须存在且哈希一致否则 delivery-gap/fail，CycleReport.deliverables 与 /encode 响应回报实际产物 {path,sha256,size}；④ P13 归因看 report.verify.source：caller 的坏判据才记 invalid/criterion-broken，模型自拟走已现成的 delivery-gap/fail（方向是收紧）；⑤ P11 结构地图可信化：build_index_report 给出 indexed/skipped/truncated + skipped 逐条理由（non-python/parse-failed/permission-denied/skip-dir/over-limit）+ 每文件 sha256 + generated_at + root + 反向索引，get_architecture/get_module/find_symbol 只加不减。新增四个单测（P15 32 项 / P14 15 项 / P13 13 项 / P11 16 项）+ 五段探针 probe_output_and_map.py（21 项）；test_outcome 按 P13 改判并补 caller 的 invalid（两向都在红）；行尾门禁第 9 组本轮抓到 arch.py/files.py 被翻成 LF 已按索引还原。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/端点/版本轴未动，TOOLS_MAP 顶层键未改，/profile 加 runtime、/encode 请求响应加字段、CycleReport 加 deliverables（进 FROZEN_REPORT_KEYS）。D30：VERSIONS 的 v1.22 早已是 16->18，本轮给仍写着 16→19 的 EVALUATION-TRANSPARENCY2-BACKEND §9 加勘误注（历史条目不重排）。契约目录只读；对侧仓库与集成工作区未写入。
+ .env.example                              |  19 +
+ .gitignore                                |   6 +
+ CYCLE.md                                  |   2 +-
+ README.md                                 |  14 +-
+ core/coding_cycle.py                      | 128 ++++++-
+ core/contract.py                          |   2 +
+ core/cycle.py                             |   8 +
+ core/pipeline.py                          |  71 +++-
+ core/runtime.py                           | 593 ++++++++++++++++++++++++++++++
+ core/symbol_index.py                      | 210 +++++++++++
+ docs/ARCHITECTURE.md                      |   2 +-
+ docs/CHANGELOG.md                         |  75 ++++
+ docs/EVALUATION-OUTPUT-CONTRACT.md        | 365 ++++++++++++++++++
+ docs/EVALUATION-TRANSPARENCY2-BACKEND.md  |   8 +
+ docs/FRONTEND_CONTRACT.md                 |  16 +
+ docs/MODULES.md                           | 282 +++++++++-----
+ docs/OPERATIONS.md                        | 130 ++++---
+ docs/PENDING_DECISIONS.md                 |  31 ++
+ main.py                                   |  49 ++-
+ tests/README.md                           |   5 +
+ tests/diagnostics/probe_output_and_map.py | 204 ++++++++++
+ tests/unit/test_arch_map.py               | 157 ++++++++
+ tests/unit/test_criterion_ownership.py    | 144 ++++++++
+ tests/unit/test_deliverables.py           | 197 ++++++++++
+ tests/unit/test_doc_consistency.py        |   6 +-
+ tests/unit/test_outcome.py                |  39 +-
+ tests/unit/test_project_root.py           | 189 ++++++++++
+ tools/arch.py                             | 257 ++++++++++---
+ tools/code_checks.py                      |  23 +-
+ tools/files.py                            |  84 +++--
+ tools/verify.py                           |  24 +-
+ 31 files changed, 3068 insertions(+), 272 deletions(-)
+```
+
+---
+
+## v1.27.1 — 2026-10-03 15:46
+
+**改动**：C4 勘误（OUTPUT-CONTRACT 评估文档）：§3.1 的 git diff --stat 是提交前快照，与备份点 cd1891b 有三处差异，已按机械输出为准写明 —— ① .gitignore 实际 6 行（快照后补了 .tmp/ 两行）；② docs/MODULES.md 实际 282 行（快照后才改版本戳 §40->§41）；③ 口径差异：快照是 24 个已跟踪文件，备份点是 32 个文件（含 core/runtime.py、四个新单测、探针、本评估文档与 VERSIONS.md）。这条本身就是 C4『改动清单与实际一致』的自纠：交出去核对的数字必须对，对不上时以机械输出为准并明写差异。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.27.1:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.27.1:"`
+
+**验证**：
+- 全量单测 PASS (46/46)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 35 个 · 测试文件 46 个
+
+**本次提交的文件**：
+```
+80e2e8d v1.27.1: C4 勘误（OUTPUT-CONTRACT 评估文档）：§3.1 的 git diff --stat 是提交前快照，与备份点 cd1891b 有三处差异，已按机械输出为准写明 —— ① .gitignore 实际 6 行（快照后补了 .tmp/ 两行）；② docs/MODULES.md 实际 282 行（快照后才改版本戳 §40->§41）；③ 口径差异：快照是 24 个已跟踪文件，备份点是 32 个文件（含 core/runtime.py、四个新单测、探针、本评估文档与 VERSIONS.md）。这条本身就是 C4『改动清单与实际一致』的自纠：交出去核对的数字必须对，对不上时以机械输出为准并明写差异。
+ docs/EVALUATION-OUTPUT-CONTRACT.md | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+```
+
+---
+
+## v1.28 — 2026-10-03 19:24
+
+**改动**：P17 pass_evidence（round_id R-ecc61d8543）：pass 必须带机械证据。① 新增 core/evidence.py —— build_evidence 按强→弱取三类证据（executed{command,exit_code,expect_exit,criterion_source} / artifacts[{path,sha256,size}] 必须在输出根内 / static_declared{reason} 理由必须可复核），pass_allowed 硬判据，describe 契约面；② 执行记录留痕：SharedMemory.set_verify 增 exit_code/expect_exit（None 不冒充 0），来源 CheckPipeline.run_verify -> check_and_run 的真实 parsed.exit_code，orchestrator/skill_runner 两个调用点接线，CycleReport.verify 与 verify 事件都带 exit_code；③ pass 出口接门禁（core/coding_cycle.py 产物对账之后、打检查点之前）：checked_by==model 且无 evidence_kind 不得记 pass，结局 invalid/unsubstantiated-pass（core/outcome.py 新种类，不默认 fail），且不落检查点；④ 报告/事件/接口：CycleReport.evidence 进 FROZEN_REPORT_KEYS，cycle_end 加 checked_by/evidence_kind/evidence，/encode 请求加 static_reason、响应加 evidence，/profile 加 pass_evidence；workspace 里的产物不算证据但逐条记 excluded_artifacts(out-of-output-root/missing-hash) 不静默。反空洞（机械输出已贴评估文档 §4.1）：探针走生产路径真实子进程 => phase=record outcome=pass evidence_kind=executed exit_code=0；抽掉 exit_code => 同一个 pass 翻成 phase=failed outcome=invalid kind=unsubstantiated-pass 且 commit 为空，恢复回 pass。验证：新增 tests/unit/test_pass_evidence.py 30/30、tests/diagnostics/probe_pass_evidence.py 13/13、全量单测 47/47、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/端点/版本轴未动；契约版本不升（纯加性）。边界：D39 拆解关卡默认关闭本轮 DISPATCH 未指派且需用户批准 => 不动（DECOMPOSE_GATE_DEFAULT 保持 warn）；P16 多语言/P12 不做；D30 事件计数经机械复查仍 18。测试夹具 test_deliverables/test_cycle_manifest 的假编排器补 exit_code（忠实复刻真实编排器，非放宽判据）。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.28:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.28:"`
+
+**验证**：
+- 全量单测 PASS (47/47)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 36 个 · 测试文件 47 个
+
+**本次提交的文件**：
+```
+50f7d4c v1.28: P17 pass_evidence（round_id R-ecc61d8543）：pass 必须带机械证据。① 新增 core/evidence.py —— build_evidence 按强→弱取三类证据（executed{command,exit_code,expect_exit,criterion_source} / artifacts[{path,sha256,size}] 必须在输出根内 / static_declared{reason} 理由必须可复核），pass_allowed 硬判据，describe 契约面；② 执行记录留痕：SharedMemory.set_verify 增 exit_code/expect_exit（None 不冒充 0），来源 CheckPipeline.run_verify -> check_and_run 的真实 parsed.exit_code，orchestrator/skill_runner 两个调用点接线，CycleReport.verify 与 verify 事件都带 exit_code；③ pass 出口接门禁（core/coding_cycle.py 产物对账之后、打检查点之前）：checked_by==model 且无 evidence_kind 不得记 pass，结局 invalid/unsubstantiated-pass（core/outcome.py 新种类，不默认 fail），且不落检查点；④ 报告/事件/接口：CycleReport.evidence 进 FROZEN_REPORT_KEYS，cycle_end 加 checked_by/evidence_kind/evidence，/encode 请求加 static_reason、响应加 evidence，/profile 加 pass_evidence；workspace 里的产物不算证据但逐条记 excluded_artifacts(out-of-output-root/missing-hash) 不静默。反空洞（机械输出已贴评估文档 §4.1）：探针走生产路径真实子进程 => phase=record outcome=pass evidence_kind=executed exit_code=0；抽掉 exit_code => 同一个 pass 翻成 phase=failed outcome=invalid kind=unsubstantiated-pass 且 commit 为空，恢复回 pass。验证：新增 tests/unit/test_pass_evidence.py 30/30、tests/diagnostics/probe_pass_evidence.py 13/13、全量单测 47/47、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/端点/版本轴未动；契约版本不升（纯加性）。边界：D39 拆解关卡默认关闭本轮 DISPATCH 未指派且需用户批准 => 不动（DECOMPOSE_GATE_DEFAULT 保持 warn）；P16 多语言/P12 不做；D30 事件计数经机械复查仍 18。测试夹具 test_deliverables/test_cycle_manifest 的假编排器补 exit_code（忠实复刻真实编排器，非放宽判据）。
+ CYCLE.md                                 |   2 +-
+ README.md                                |   3 +-
+ core/coding_cycle.py                     |  63 +++++-
+ core/contract.py                         |  22 ++-
+ core/cycle.py                            |   9 +
+ core/evidence.py                         | 258 ++++++++++++++++++++++++
+ core/memory.py                           |   9 +
+ core/orchestrator.py                     |   5 +
+ core/outcome.py                          |   7 +
+ core/skill_runner.py                     |   3 +
+ docs/ARCHITECTURE.md                     |   2 +-
+ docs/CHANGELOG.md                        |  73 +++++++
+ docs/EVALUATION-PASS-EVIDENCE.md         | 327 +++++++++++++++++++++++++++++++
+ docs/MODULES.md                          |  55 +++++-
+ docs/OPERATIONS.md                       |  27 ++-
+ main.py                                  |  14 ++
+ tests/README.md                          |   2 +
+ tests/diagnostics/probe_pass_evidence.py | 250 +++++++++++++++++++++++
+ tests/unit/test_cycle_manifest.py        |   4 +
+ tests/unit/test_deliverables.py          |   5 +-
+ tests/unit/test_pass_evidence.py         | 276 ++++++++++++++++++++++++++
+ 21 files changed, 1403 insertions(+), 13 deletions(-)
+```
+
+---

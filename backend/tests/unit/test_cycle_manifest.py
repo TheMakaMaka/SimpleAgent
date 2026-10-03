@@ -71,6 +71,10 @@ class FakeOrchestrator:
                            or vr.get("reason") or ""),
                 command=vc.label(),
                 fingerprint="fake",
+                # ★ P17：真实编排器也会记退出码；假编排器必须同样做，
+                # 否则 pass 会被 `unsubstantiated-pass` 门禁拦下（测的就不是集成路径）。
+                exit_code=(vr.get("parsed") or {}).get("exit_code"),
+                expect_exit=vr.get("expect_exit"),
             )
 
         return OrchestratorResult(

@@ -54,9 +54,16 @@ OVERRIDE_FILE = os.path.join(paths.ROOT, "spec.override.json")
 def _scan_calls(path: str, func_names: set[str]) -> list[tuple[str, int]]:
     """AST 扫出 `func("kind", ...)` 的第一参数，返回 [(kind, lineno)]。
 
-    同时认两种写法：
-        emit_progress("phase", ...)          ← 直接调用
-        _safe(emit_progress, "phase", ...)   ← bridge/hooks.py 的写法
+    认三种写法（**都出现过，扫描器必须跟着代码走**）：
+
+        emit_progress("phase", ...)            ← 直接调用
+        _safe(emit_progress, "phase", ...)     ← 早期写法（实参在保护之外）
+        emit_safe("phase", _build, ...)        ← 现行写法（payload 构造也在保护内）
+
+    ★ 最后一种是 P6（`_safe` 契约）引入的。**漏认它会让 `/api/spec` 少认 5 个 bridge 事件**
+    —— 实测：只认前两种时 bridge 侧从 21 掉到 **0**（`phase`/`files`/`task_start`/
+    `tool_call`/`verify_probe` 全没了，`files`/`tool_start` 这类就再也不显示）。
+    这个漏洞是**我自己的门禁**（`test_partition` / `test_spec` / `test_event_contract`）抓到的。
     """
     if not os.path.isfile(path):
         return []
@@ -74,6 +81,9 @@ def _scan_calls(path: str, func_names: set[str]) -> list[tuple[str, int]]:
 
         target = None
         if name in func_names:
+            target = node.args[0]
+        elif name == "emit_safe" and len(node.args) >= 2:
+            # `emit_safe(kind, build, *args)` —— 首参就是 kind
             target = node.args[0]
         elif name == "_safe" and len(node.args) >= 2:
             first = node.args[0]
@@ -287,6 +297,55 @@ CALIBRATION: dict[str, Any] = {
         "verify_skipped": {"label": "⚠ 验证被跳过", "tone": "warn", "panel": "gate",
                            "detail": "{reason}"},
 
+        # ================= TRANSPARENCY-BACKEND（上游 `since="1.2"`）=================
+        # ★ 这三个是**上游已经实装、但契约主本（v1.0.24）还没声明**的加性事件
+        #   （`D:\PythonProject\SimpleAgent2_Cycle\core\contract.py:172/181/189`）。
+        #   实测（2026-09-27，真上游）：不标定它们，`/api/spec` 就报
+        #   `uncalibrated_events=[orchestrator_round, self_report, verify_criterion]`
+        #   —— 与 `verify_skipped` 那次是同一类缺口，处理方式也照旧：
+        #   **先认下来，别让它退化成裸文本行**。
+        #
+        #   上游为此还特意**避开了 `orchestrator_decision` 这个名字**
+        #   （`core/contract.py:178-180` 的原话：那个 kind 由前端 bridge 发，
+        #   两个生产者发同一个 kind 会让审计无法判断哪条权威）。
+        #   两边数据同源（同一个 `_decide` 返回值），所以标定文案也对齐。
+        "orchestrator_round": {"label": "编排器第 {round} 轮决策（{status}）", "tone": "model",
+                               "panel": "tasks", "detail": "{reasoning}"},
+        #   判据演化：`action ∈ {adopted, rejected, executed}`，每条自带
+        #   `previous_command` / `previous_passed` —— 所以"上一条失败了、这一条换成了什么"
+        #   不用按 seq 拼（这正是 B1 要的东西）。
+        #   tone 取 `warn`：这条事件出现在时间线上时，**最需要被看见的就是"判据动过"**；
+        #   通过与否由 `passed` 字段表达，由透明化面板负责完整呈现。
+        "verify_criterion": {"label": "验收判据 {action}", "tone": "warn", "panel": "gate",
+                             "detail": "{reason}{detail}"},
+        #   收尾自述 + 与机械事实的对照。`ok=false` 是**自述没生成出来**，
+        #   不是"模型说没事"（`core/contract.py:194-195`）。
+        #   **刻意不给 `detail` 模板**：`confidence` 是对象 `{level,basis}`，
+        #   `render()` 对对象做 `String(v)` 会得到 `[object Object]` —— 那正是
+        #   "显示了一个事实不支持的东西"。没模板时前端会从 payload 里挑可读字段。
+        "self_report": {"label": "收尾自述（与机械事实交叉核对）", "tone": "model",
+                        "panel": "gate"},
+
+        # ================= TRANSPARENCY2-BACKEND（上游 `since="1.3"`）=================
+        # 同样是**先认下来**：不标定，真上游下 `/api/spec` 就报
+        # `uncalibrated_events=['decompose_review','reuse']`（实测）。
+        # 契约主本还没同步这两个（见 `partition.CONTRACT_LAG_KINDS`），已作为
+        # 接口级缺口报给统筹方。
+        #
+        #   `reuse`（`core/contract.py:200`，**已在 `core/coding_cycle.py:507` 发出**）：
+        #   机械层**复用性**检查 —— 同一个概念模型发明了三个名字那种事，是**阻塞**项。
+        #   标 `warn`：它是"有否决权的机械关卡"，通过与否由 `passed` 说。
+        "reuse": {"label": "复用性检查（机械 · 有否决权）", "tone": "warn",
+                  "panel": "gate", "detail": "{blocking}"},
+        #
+        #   `decompose_review`（`core/contract.py:207`，**已声明、尚未发出**）：
+        #   ③ 拆解合规关卡。`principles` 每条形如
+        #   `{principle, verdict: violated|ok|undecidable, evidence, checked_by, independent}`。
+        #   ⚠ `undecidable` 非空说明**审查范围不完整**，**不得**呈现为"审查通过"。
+        #   tone 取 `warn` 而不是 `ok`，就是这个原因（"判不了"不是"通过"）。
+        "decompose_review": {"label": "拆解合规审查", "tone": "warn",
+                             "panel": "gate"},
+
         # 人工决策
         "decision_opened": {"label": "打开人工决策点", "tone": "warn", "panel": "decisions",
                             "detail": "{question}"},
@@ -498,6 +557,18 @@ def build_spec() -> dict:
             "event_count": len(events),
             "uncalibrated_events": uncalibrated,
             "dead_calibrations": dead,
+            # ★ 上游已实装、契约主本尚未声明的事件（事实源：`partition.CONTRACT_LAG_KINDS`）。
+            #   它是**真信号**（主本落后），不是实现错 —— 但必须**显示出来**，
+            #   否则"实测与契约不一致"就没人看得见。
+            "contract_lag": partition_mod.CONTRACT_LAG_KINDS and sorted(
+                set(event_kinds()) & set(partition_mod.CONTRACT_LAG_KINDS)
+            ),
+            "contract_lag_note": (
+                "上游已实装、契约主本（v1.0.24）尚未声明：" 
+                + "、".join(sorted(set(event_kinds()) & set(partition_mod.CONTRACT_LAG_KINDS)))
+                + "。方向是「主本落后」；契约同步后本项应清空。"
+                if (set(event_kinds()) & set(partition_mod.CONTRACT_LAG_KINDS)) else ""
+            ),
             "override_file": OVERRIDE_FILE if os.path.isfile(OVERRIDE_FILE) else None,
             "errors": cal_errors,
         },
@@ -513,12 +584,31 @@ def build_spec() -> dict:
 FRONTEND_REDUCER = os.path.join(paths.ROOT, "frontend", "src", "store", "run.ts")
 
 
+#: 采集器声明的词表所在的文件（`RECOGNIZED_KINDS`）
+FRONTEND_COLLECTOR = os.path.join(paths.ROOT, "frontend", "src", "store", "transparency.ts")
+
+#: 采集器声明的事件名（与 `frontend/scripts/gen-expectations.mjs` 扫的是同一处）。
+#: ★ 为什么它也算"前端认得的词"：`TRANSPARENCY-UI` 的三个新事件由采集器的
+#:   `RECOGNIZED_KINDS` 声明并处理（写 `case` 会与"死代码"门禁冲突，见
+#:   `frontend/src/store/transparency.ts` 开头的说明）。只扫 `case` 会**少报 3 个**,
+#:   于是 `/api/audit` 会给出错误的责任判定（把"前端早就认得"报成"前端没跟上"）。
+def collector_event_kinds() -> set[str]:
+    if not os.path.isfile(FRONTEND_COLLECTOR):
+        return set()
+    text = io.open(FRONTEND_COLLECTOR, encoding="utf-8").read()
+    m = re.search(r"export const RECOGNIZED_KINDS = \[(.*?)\]", text, re.S)
+    return set(re.findall(r"'([a-z_]+)'", m.group(1))) if m else set()
+
+
 def frontend_event_kinds() -> set[str]:
-    """从 TS 归约器里抽出它认得的事件 kind。文件不在就返回空集合。"""
+    """从 TS 归约器（`case`）与采集器（`RECOGNIZED_KINDS`）抽出它认得的事件 kind。
+
+    文件不在就返回空集合。
+    """
     if not os.path.isfile(FRONTEND_REDUCER):
         return set()
     text = io.open(FRONTEND_REDUCER, encoding="utf-8").read()
-    return set(re.findall(r"case '([a-z_]+)':", text))
+    return set(re.findall(r"case '([a-z_]+)':", text)) | collector_event_kinds()
 
 
 def event_contract() -> dict:

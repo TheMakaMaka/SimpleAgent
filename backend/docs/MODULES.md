@@ -1,6 +1,6 @@
 # 模块与接口参考
 
-> **同步至 CHANGELOG §34** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 所有签名均从代码实际读出。标 `**(未使用)**` 或 `(预留)` 的表示
 > 定义了但没有消费方——详见 §19 当前不一致清单。
@@ -386,7 +386,9 @@ class Orchestrator:
 | `_files_to_verify(memory, prior_files, declared_files)` | 声明 > 产物 > prior（语义修正见 §24/§33） |
 | `_deliverables(memory, declared_files)` | ★ 本轮**可被判据引用**的交付物 = 声明 ∪ `write_file` 产物（**不含** prior） |
 | `_verify_references(command, deliverables)` | ★ 命令引用了哪些交付物（路径/文件名/词干；词干匹配先剥字符串字面量） |
-| `_model_verify_admissible(raw_verify, deliverables)` | ★ 自拟判据的**可采性下限**：须引用交付物，且本轮得有交付物 |
+| `_module_names_for(path)` | ★ `.py` 交付物可被 import 成什么名字（`src/add.py` → `src.add` / `add`；`pkg/__init__.py` → `pkg`） |
+| `_called_modules(command)` | ★ 命令**调用进了哪些模块**（AST `Call` + `import` 别名解析；`assert mod.f` 不算） |
+| `_model_verify_admissible(raw_verify, deliverables)` | ★ 自拟判据的**可采性下限**：① 必须引用交付物 ② 引用了 `.py` 就**必须调用**它（§35 B3） |
 | `_verify_fingerprint(verify_command, files)` | `sha1(command + "\|" + sorted(files))[:16]` |
 | `_verify_detail(vr)` | 从验证结果提取一句可读明细 |
 | `_decide(memory)` | 刷新结构化上下文 → 构造 prompt → `chat_json` → 过滤幻觉工具名 |
@@ -615,10 +617,19 @@ class ModuleEntry:
 
 def analyze_file(abs_path: str, rel_path: str) -> ModuleEntry
 def build_index(base_dir: str | None = None) -> dict[str, ModuleEntry]
+def build_index_report(base_dir=None, limit=None) -> dict      # ★ P11：结构 + 覆盖率账目 + 新鲜度
+def freshness_of(report, paths=None) -> dict                   # {generated_at, root, files:{path:sha256}}
+def reverse_index(index) -> dict[str, list[str]]               # ★ P11：谁 import 了 X
+def dependents_of(index, module) -> list[str]
 def find_symbol(index: dict[str, ModuleEntry], name: str) -> list[dict]
 def dangling_imports(index: dict[str, ModuleEntry]) -> list[dict]
 def summarize(index: dict[str, ModuleEntry]) -> dict     # (未被工具消费)
 ```
+
+`SKIP_REASONS = ("non-python", "parse-failed", "permission-denied", "skip-dir", "over-limit")` ——
+`build_index_report()` 的 `coverage.skipped_items` **逐条**落在这些理由上，
+且账目自洽（`indexed + skipped == scanned`；被整棵跳过的目录另计 `skipped_dirs`，
+不算进文件数）。**禁止静默截断**：超出 `limit` 的模块逐条记进 `truncated_items`。
 
 私有辅助：`_format_signature`、`_ModuleVisitor`、`_module_name_for`、
 `_resolve_local`、`_local_packages`。
@@ -703,8 +714,8 @@ class MemoryRecord:
 class SharedMemory:
     def __init__(self, goal: str)
     # 属性：goal, records, artifacts{}, facts[], verify_state, _verified_fingerprint,
-    #       verify_untrusted, verify_rejections[], _fp_count,
-    #       structured_context, structured_source
+    #       verify_untrusted, verify_rejections[], criterion_log[], decision_log[],
+    #       _fp_count, structured_context, structured_source
 
     def record(self, task, result) -> None
     def add_fact(self, fact: str) -> None            # (未被工作流调用)
@@ -713,6 +724,10 @@ class SharedMemory:
     def set_verify(self, passed: bool, detail: str, command: str,
                    fingerprint: str, source: str = "caller") -> None
     def reject_verify(self, raw_verify: dict, why: str) -> None   # ★ VERIFY-VACUOUS
+    def log_criterion(self, action: str, command: str, *, reason: str = "",
+                      passed: bool | None = None, detail: str = "",
+                      source: str = "") -> None                    # ★ B1
+    def log_decision(self, round_no: int, data: dict) -> None      # ★ A1
     def already_verified_at(self, fingerprint: str) -> bool
     def verified_passed(self) -> bool
 
@@ -918,14 +933,14 @@ describe_profiles()     # {'coding': [...15], 'general': [...4]}
 | `check_and_run` | `verify.py` | 语法检查 + 执行合一，返回 `parsed_error` | ✅ VERIFY |
 | `check_syntax` | `code_checks.py` | AST 语法检查 | ✅ CHECK（阻塞） |
 | `run_lint` | `code_checks.py` | ruff lint（未装则 `ok:null` + `skipped`） | ✅ CHECK（非阻塞） |
-| `write_file` | `files.py` | 写 workspace 文件；返回 `OK:FILE\|路径\|大小\|说明` | ❌ |
-| `read_file` | `files.py` | 读 workspace 文件；>2000 字符返回预览 | ❌ |
-| `list_workspace` | `code_checks.py` | 列出 workspace 文件 | ❌ |
+| `write_file` | `files.py` | 写**目标根**文件（`outputs/` 前缀 → 输出根）；返回 `OK:FILE\|路径\|大小\|说明`；越界 ⇒ 结构化拒绝 | ❌ |
+| `read_file` | `files.py` | 读**目标根**文件；>2000 字符返回预览 | ❌ |
+| `list_workspace` | `code_checks.py` | 列出**目标根**文件（返回 `root` / `scope`） | ❌ |
 | `parse_python_error` | `parse.py` | traceback → 结构化 `{error_type,message,category,frames}` | ❌ |
 | `review_code` | `quality.py` | 代码质量审查（**建议性**，不决定成败） | ❌ |
-| `get_architecture` | `arch.py` | 工程结构总览 | ❌ |
-| `get_module` | `arch.py` | 单模块符号表 + 反向依赖 | ❌ |
-| `find_symbol` | `arch.py` | 按名反查符号定义位置与签名 | ❌ |
+| `get_architecture` | `arch.py` | 工程结构总览 + **覆盖率账目 / 新鲜度 / 范围 / 反向索引** | ❌ |
+| `get_module` | `arch.py` | 单模块符号表 + 反向依赖 + 内容哈希 | ❌ |
+| `find_symbol` | `arch.py` | 按名反查符号定义位置与签名（未命中时给覆盖率） | ❌ |
 | `reflect_on_history` | `reflect.py` | 跨 cycle 失败模式分析（只读，仅供参考） | ❌ |
 | `review_document` | `docs.py` | 文档机械审查（代码块语法 / 引用存在性；只读） | ❌ |
 | `get_system_info` | `basic.py` | 操作系统 / Python 版本 / 当前时间 | ❌ |
@@ -933,10 +948,15 @@ describe_profiles()     # {'coding': [...15], 'general': [...4]}
 > `list_workspace`（`code_checks.py`）的跳过策略与 `core.symbol_index._SKIP_DIRS`
 > **共用同一份常量**（`.git` / `.venv` / `node_modules` / `_tmp` / `_debug` /
 > `__pycache__`），并额外跳过 `.` 开头的目录与文件。
-> 返回体含 `total` / `listed` / `truncated` / `skipped_dir_names` ——
+> 返回体含 `root` / `scope` / `total` / `listed` / `truncated` / `skipped_dir_names` ——
 > **截断要明说，"看不见"≠"不存在"**。
 > 实测事故：它原来只过滤 `_` 开头的目录，把 `.git/` 里 **249 个文件**倒给了模型，
 > 模型照单全收写进了交付物（`docs/CHANGELOG.md` §29.3）。
+>
+> ★ **P15（§32）**：六个文件/结构工具（`read_file` / `write_file` /
+> `list_workspace` / `get_architecture` / `get_module` / `find_symbol`）
+> **一律以 `core/runtime.py::effective_root()` 为根** ——
+> 任务级 `project_root` 设了就用它，否则是 `workspace_root`。
 
 ### general profile（4 个）
 
@@ -991,18 +1011,23 @@ class RunStore:
 
 按影响排序。
 
-### #1 `WORKSPACE_DIR` 在 6 处独立计算，无单一来源
+### #1 根路径的来源已收敛到 `core/runtime.py`，但两处仍各自计算
 
-以下模块各自算一份 workspace 绝对路径，取值都是 `os.path.abspath("workspace")`：
+**单一来源**：`core/runtime.py`（§32）给出 `runtime_root` / `workspace_root` /
+`output_root` / `effective_root()`；`core/pipeline.py`、`tools/files.py`、
+`tools/verify.py`、`tools/arch.py`、`tools/code_checks.py` 与 `core/coding_cycle.py`
+的取根都已改走它。
 
-`core/pipeline.py`、`core/symbol_index.py`、`core/checkpoint.py`、
-`tools/python_exec.py`、`tools/verify.py`、`tools/files.py`。
+**仍是独立计算**（有意保留，各有用例）：
 
-而 `core/worker.py` 用的是**相对路径** `"workspace/_debug"`。
+| 位置 | 现状 | 理由 |
+|---|---|---|
+| `core/checkpoint.py` | 模块常量 `os.path.abspath("workspace")` | 检查点/回退**锚在工作区根**（草稿区）——设了目标项目根时**不去 reset 别人的仓库**（三方隔离） |
+| `tools/python_exec.py` | 模块常量 `os.path.abspath("workspace")` | `run_python` 不在 P15 的六个消费者里；改动它要先确认与 verify 的 cwd 语义 |
 
-**影响**：当前一致（都依赖 CWD 为仓库根目录），但没有单一来源。
-若进程从别处启动，`worker.py` 的调试目录会与其它模块不一致。
-多数测试脚本已改为从 `tests/_bootstrap.py` 取 `WORKSPACE`，但生产代码还没统一。
+**影响**：CWD 非仓库根时，`worker.py` 的调试目录（相对路径 `"workspace/_debug"`）
+与 `checkpoint.py` / `python_exec.py` 会与 `runtime` 的取值不一致。
+测试脚本统一从 `tests/_bootstrap.py` 取 `WORKSPACE`。
 
 ### #2 `facts` 机制未接线
 
@@ -1374,3 +1399,433 @@ def describe() -> dict    # {code_dir, package_dir, fingerprint, module_files, n
 且与当前代码一致）。
 
 ---
+
+## 25. `core/self_report.py`（收尾自述的**交叉核对**）
+
+**职责**：把模型写的收尾自述与**机械事实**逐条对照，产出 `fact_check`。
+**依赖**：`os`、`re`（纯标准库）。
+
+```python
+REQUIRED_FIELDS = ("done", "not_done", "why", "reflections",
+                   "approach", "confidence", "open_questions")
+REQUIREMENT_STATUS = ("done", "not_done", "unknown")
+
+def normalize(raw) -> dict          # 缺字段补空；**不做语义推断**
+def fact_check(self_report, facts) -> dict
+def exists_in_workspace(rel, workspace_dir) -> bool
+```
+
+`fact_check` 返回 `{checked, contradictions[], unmentioned[], notes[], missing_fields[], facts{}}`，
+`contradictions[]` 每条含 `kind` / `claim`（自述说了什么）/ `fact`（机械事实是什么）/ `severity`。
+四类对照（与需求 C2 的四行一一对应）：
+
+| 对照对象 | 事实来源 | `kind` |
+|---|---|---|
+| 自称产出的文件是否真在磁盘上 | `manifest.actual` ∪ `touched_files` ∪ 真实磁盘列举 | `artifact-missing` |
+| 自称验证通过是否真通过 | `report.verify.passed` / `source` | `verify-claim-vs-fact` |
+| 自称检查通过是否真通过（**含 lint**） | `report.check.status` + `check_steps[].status` | `check-claim-vs-fact` / `lint-failed-not-disclosed` |
+| 目标要求既不在 done 也不在 not_done | 模型自列的 `requirements[].status` | `unmentioned` |
+
+**三条设计纪律**（写在文件头，也是这一层不变成"第二个自嗨通道"的原因）：
+
+1. **只做可判定的相等比较**，不做语义相似、不做关键词猜测；
+2. **绝不改判 cycle 结果** —— `phase` / `verify` / `commit` 一个都不动；
+3. **矛盾要能直接读**（三栏：自述说了什么 / 事实是什么 / 差在哪）。
+
+**为什么"目标要求"由模型列、而不是程序抽**：从自然语言目标里机械抽取要求**不可判定**；
+让模型列 `requirements[]`（每条一个状态）+ 程序核对覆盖率，
+"未提及"就成了**机械判定**，而不是又一层模型判断。
+
+**门禁**：`tests/unit/test_self_report.py`（19 项，含"撒谎必被抓"与"诚实不被冤枉"两组）；
+生产路径在 `tests/diagnostics/repro_user_run_20260927.py`（统筹方固定样例）。
+详见 `docs/CHANGELOG.md §35`、`docs/EVALUATION-TRANSPARENCY-BACKEND.md`。
+
+---
+---
+
+## 26. `core/outcome.py`（结局四值 + 判据来源）
+
+**职责**：回答**"这次读数是什么"**（`TRANSPARENCY2-BACKEND` P1 / 工作单 D19）。
+**依赖**：无（纯常量 + 纯函数）。
+
+```python
+OUTCOMES = ("pass", "fail", "abstain", "invalid")
+KIND_TO_OUTCOME: dict[str, str]      # 原因种类 → 四值（每个出口显式设置）
+_CRITERION_BROKEN_MARKERS = ("SyntaxError", "IndentationError", "TabError")
+_ENV_MISSING_MARKERS = ("ModuleNotFoundError", "ImportError")
+
+def classify_verify_detail(detail) -> tuple[kind, why]
+def outcome_of(kind) -> str            # 未知种类**默认 fail**（不默认 pass/abstain）
+def criterion_trust(source, outcome) -> str
+def build_verdict(kind, reason, verify, *, extra="") -> dict
+def is_success(outcome) -> bool        # 只有 pass 算达成；invalid **不算**失败
+```
+
+| 结局 | 含义 | 由谁触发（`outcome_kind`） |
+|---|---|---|
+| `pass` | 达成且有判据为证 | `verified` |
+| `fail` | 试过了，结论是没达成 | `delivery-gap` / `code-broken` / `reuse-violation` / `verify-failed` / `no-tasks` / `stalled` / `relaxed` |
+| `abstain` | 说不出"什么叫对"/自己声明做不到 | `no-criterion` / `no-admissible-criterion` / `model-blocked` |
+| `invalid` | **判据或环境自身坏了 —— 读数无效** | `criterion-broken` / `environment-missing` / `wiring` |
+
+**为什么原因种类要显式设置、不嗅探错误字符串**：嗅探会把"判据写错"记成"模型不行"，
+而"污染能力画像"正是这一条要治的病。字符串只用于 verify 失败的**再细分**。
+
+**判据来源进判定链**：`verdict.criterion_trust ∈ {caller-authoritative,
+model-self-authored, none}` + `criterion_independent`。39 条运行里判据来自调用方的是
+**0 条** —— 所以"模型自拟判据的通过"必须一眼区别于"调用方判据的通过"。
+
+**门禁**：`tests/unit/test_outcome.py`（18 项，四值各构造一次走真 cycle）。
+
+---
+
+## 27. `core/reuse_checks.py`（机械复用性的五类缺陷）
+
+**职责**：`TRANSPARENCY2-BACKEND` P2 —— 用户原话「代码基本模块能满足要求，
+但**不具备全局复用属性**，对项目的危害会很大」。
+**依赖**：`ast`、`os`、`core.symbol_index`；**不 import 任何模型层**。
+
+```python
+BLOCKING_KINDS = {"undefined-symbol", "undefined-name", "symbol-arity-mismatch"}
+check_code(code, *, label) -> (violations, referenced_modules)   # 核心：也被判据自检复用
+check_undefined_names(code, *, label) -> list[dict]              # F821 兜底
+run_ruff_f821(code) -> list[dict]                                # 有 ruff 时优先
+duplicate_symbols(index=None) / naming_inconsistency(index=None) -> list[dict]
+check_workspace(index=None) -> {checked, blocking, warnings, passed}
+```
+
+| 类 | 手段 | 级别 |
+|---|---|---|
+| 调用了不存在的符号 | 符号表反查（`mod.name` / `from mod import name`） | **阻塞** |
+| 用了没导入 | ruff `F821` → 无 ruff 时 AST 兜底 | **阻塞** |
+| 按旧签名传参（U2） | 签名 ↔ 位置参数个数（保守：`*args`/关键字/解析不了就不判） | **阻塞** |
+| 同一符号多模块定义 | 符号表去重（`_DUP_ALLOWLIST` 豁免 `main`/`run`/`test_*` 等） | 警告 |
+| 命名不一致 | 词干聚类（归一化后词干相同但拼法不同） | 警告 |
+
+**同一份判据两处用**（`STANDARD 的 3.3c 节` 的"判据只有一份"）：
+交付物自检 **和** 判据自检都调 `check_code` —— 判据引用不存在的符号时，
+结局是 **`invalid`**（读数无效），而不是 `fail`（模型不行）。
+
+**门禁**：`tests/unit/test_reuse_checks.py`（18 项；含实测那两条判据）。
+
+---
+
+## 28. `core/decompose_review.py`（③ 拆解合规关卡）
+
+**职责**：`TRANSPARENCY2-BACKEND` P3 —— **与代码质量审查解耦**、先机械、
+**有否决权**。原则本体**不在本模块**，在 `core/contract.py::DECOMPOSE_PRINCIPLES`
+（L1：原则是契约载荷，**执行方只读**）。
+
+```python
+PRINCIPLES = ("P1","P2","P3","P4","P5","P6","P7","P8")
+CONJUNCTIONS = ("并","和","以及","同时","然后","再","与")     # P3
+MAX_TASKS = 12   MAX_DEPTH = 3   SYNONYM_JACCARD = 0.6        # P7 / P6
+
+def review_decomposition(decomp, *, goal="") -> dict
+def from_cycle_plan(goal, declared, tasks, requirements=None) -> dict
+```
+
+返回 `{passed, violated[], undecidable[], coverage_complete, principles[], summary,
+checked_by="tool", independent=False, model_layer{...}}`；
+每条原则 `{principle, verdict: violated|ok|undecidable, evidence, checked_by, independent, level}`。
+
+**三个必须一起看的字段**（前端尤其）：
+
+* `passed` —— **只代表机械条款**通过；
+* `undecidable` 非空 —— 覆盖不全（P5/P6 是机械近似）；
+* `independent=false` —— **独立审查模型未启用**（REVIEW 未配置）。
+
+**不得**把"只有 L1+L2"呈现成"审查通过"。
+
+**接进 cycle 的模式**：`DECOMPOSE_GATE ∈ {off, warn(默认), block}`。
+`warn` 照样算、照样进 `decompose_review` 事件与报告，只是不拦路；
+`block` 才否决（`outcome_kind=decomposition-violation`）。
+为什么默认 `warn`：统筹方自己说"P3 阈值等能力基线校准"，而 7B 现阶段的分解
+**几乎必然违反** P3/P6（实测两次运行都判不通过）。
+
+**门禁**：`tests/unit/test_decompose_review.py`（19 项；含"已知错的分解必须判错"
+与"合规分解必须判过"两个方向）。
+
+---
+
+---
+
+## 29. `TRANSPARENCY3-BACKEND`（P6/P7/P8）的三处签名变化
+
+**P6 · 判词必须描述产物** —— 引擎：`core/pipeline.py` + `tools/verify.py`
+
+```python
+# core/pipeline.py（签名变了：多一个 files）
+async def run_verify(self, command: VerifyCommand,
+                     files: list[str] | None = None) -> dict[str, Any]
+    # 返回里新增：artifact_hashes / artifact_hashes_after / cwd /
+    #             cache_cleared / cache_warning
+
+@staticmethod
+def artifact_hashes(files: list[str] | None) -> dict[str, str]   # {相对路径: sha1[:12]}
+@staticmethod
+def _purge_pycache() -> tuple[int, str]                          # (清掉的目录数, 警告)
+```
+
+`tools/verify.py`：子进程改成 `["python", "-B", tmp]`，env 加
+`PYTHONDONTWRITEBYTECODE=1` —— **不再写字节码**，配合验前清 `__pycache__`，
+杜绝"`.pyc` 比源码新 → import 到上一版代码"。
+
+`core/memory.py`：
+
+```python
+def set_verify(self, passed, detail, command, fingerprint,
+               source="caller",
+               artifact_hashes: dict | None = None,
+               cwd: str = "", cache_cleared: int = 0,
+               cache_warning: str = "") -> None
+```
+
+`verify_state` 因此带 `artifact_hashes` / `cwd` / `cache_cleared` / `cache_warning`；
+`CycleReport.verify` 再加 `artifact_hashes_final`（交付时重算）与
+`artifact_mismatch`（对不上时的逐条差异）。
+
+**对账点**：`coding_cycle` 在**打检查点之前**重算一次最终哈希 ——
+对不上 → **不打检查点**，`outcome_kind="artifact-mismatch"` → 结局 **`invalid`**。
+
+**P7 · 符号表收模块级赋值** —— `core/symbol_index.py` + `core/manifest.py`
+
+```python
+_ModuleVisitor.visit_Assign / visit_AnnAssign      # 模块级绑定 → Symbol(kind="variable")
+raw_module_bindings(rel_path, base_dir=None) -> dict[str, int]   # 独立的第二意见
+```
+
+`manifest` 的符号判定因此分三态：`symbol-missing`（error，带 `at=文件:行`）/
+`symbol-unindexed`（warning，"有但我没索引到"，**不拦路**）/ 无违规。
+
+**P8 · 审查模式显式** —— `decompose_review` 事件加 `mode`（`off`/`warn`/`block`）
+与 `applied`（`true` 才表示这次结论**真的用了否决权**）。
+
+**门禁**：`tests/unit/test_artifact_binding.py`（24 项，含"缓存陈旧"的**确定性复现**）。
+
+---
+---
+
+## 30. `REUSE-SYMBOL-SCOPE`（P7b）：引用反查的**作用域判据**
+
+`core/reuse_checks.py::check_code` 的「形式 1」（`mod.name`）现在按**三条顺序**判：
+
+| 顺序 | 判据 | 结论 |
+|---|---|---|
+| 1 | `owner` 根名是**非 import 绑定**（变量/参数/`with as`/`for`/`except as`/推导式/`def`\|`class` 名） | **不判**（对象属性，本地 AST 索引不可知） |
+| 2 | `owner` 根名是 **import 绑定** | **模块反查**（`import t1` 后 `t1.bar` 仍会红） |
+| 3 | 根名**既非绑定也非内置** | **`undefined-name`（阻塞）**：`np.array(...)` 缺 import |
+| 附 | 文件里有 `from x import *` | 该文件不做"未定义名"判定（宁可漏报也不误报） |
+
+**为什么要这样分**：实测（能力基线 T9）模型写的 `app = Flask(__name__)` +
+`@app.route(...)` 被当成"模块 `app` 的属性"而**误判 blocking**，
+于是**正确代码被硬否决**、模型还被带着在 `self_report` 里"反思"它。
+而**不能靠取消 block 来修** —— 所以第 3 条把"根名压根不存在"补成阻塞，
+三条反空洞样例（`np.array` / `from mylib import f` / `t1.bar`）必须仍然红。
+
+**不变量**（`tests/unit/test_reuse_scope.py` 守着）：
+**同一份代码在"有同名文件/没有同名文件"两种工作区下结论必须一致**。
+
+---
+
+## 31. `tools/tool_contract.py`（P9：工具调用的规范形 + 产出检验）
+
+**职责**：把「模型给的形状」统一成 canonical 形式，并检验工具产出。
+模型只需决定「做什么 / 怎么做 / 用哪个工具」，**键名、类型、缺省、别名**由这一层负责。
+
+**依赖**：`json`、`typing`、`tools/registry.py`（`TOOLS_MAP` / `is_error_result`）。
+
+```python
+ALIASES: dict[str, dict[str, str]]          # 同义键名 → canonical 名（声明在表里）
+NORMALIZATION_RULES: tuple[str, ...]        # 四条规则（与契约逐条对应）
+RESULT_ENVELOPE_KEYS = ("ok", "kind", "data", "error")
+ENVELOPE_TOOLS: dict[str, str]              # 已登记结果信封的工具 → 结果类别 kind
+STAGED_OUT_OF_ENVELOPE: dict[str, str]      # 未登记的工具 → 为什么（分阶段判据）
+
+class ToolArgError(Exception): ...          # code / message / hint
+def error_result(tool_name, err) -> str     # 渲染成 {ok:false, kind:error, error:{…}}
+def normalize_args(tool_name, args) -> dict # 不合规抛 ToolArgError
+def try_normalize(tool_name, args) -> (dict|None, ToolArgError|None)
+def validate_result(tool_name, result) -> dict
+def build_envelope(tool_name, result) -> str  # 产出入信封（只对登记的工具）
+def envelope_of(result) -> dict|None          # 读出信封；旧协议返回 None
+def unwrap_payload(result) -> Any             # 取回工具原产出（旁路读内容用）
+def envelope_policy() -> dict                 # 已登记 / 未登记 + 判据（公开声明）
+def audit() -> dict                         # 封闭性 + 别名自洽 + 信封登记（机判）
+def describe_contract() -> dict             # 给 /profile 的紧凑视图（公开别名表）
+```
+
+**归一顺序**（顺序有讲究：先归一再判未知，否则 `{"code": …}` 这种别名会被当未知键拒掉）：
+
+| 顺序 | 规则 | 行为 |
+|---|---|---|
+| 1 | 别名归一 | `ALIASES` 里的同义键收敛到 canonical；同归一键取值冲突 ⇒ `ambiguous-key` |
+| 2 | **未知键拒绝** | 结构化报错（`unknown-key` + 可用键 + 已知别名），**不静默丢弃、不塞 kwargs** |
+| 3 | 类型强制 | 可判定的才强制（`"3"→3`、`3.0→3`）；判不了 ⇒ `type-mismatch`（不猜） |
+| 4 | 必需键 | `required` 缺失 ⇒ `missing-required` |
+| 5 | 缺省填充 | schema 有 `default` 的键补上（`省略 == 显式给默认值`） |
+
+**产出检验**：新协议 `{ok, kind, data, error}`（`ok=false` 时 `error` 必填，
+`ok=true` 时 `data` 必填）。**旧字符串结果仍可读** ——
+`validate_result` 对纯字符串一律 `accept`，失败判定仍走
+`registry.is_error_result()`（**语义未改**）。只有登记进 `ENVELOPE_TOOLS`
+的工具，产出不合规才会 `reject` 并回灌 `tool-result-invalid`。
+
+**产出入信封（★ 2026-10-03 追加验收 ③）**：`v1.25` 只把机制建好，
+`envelope_tools` 是**空集** ⇒ 没有任何工具的结果会被校验 ——
+**「机制存在」不等于「机制接上了」**。现在 `ENVELOPE_TOOLS` **非空**，
+`Worker._invoke` 在**产出检验之后**用 `build_envelope()` 把登记工具的产出
+套成信封（顺序不能反：先套再验，否则工具自己的中间形状会被当成不合规信封拒掉）。
+
+| 已登记 | 结果类别 `kind` | 信封形状（成功 / 失败） |
+|---|---|---|
+| `check_and_run` | `verification` | `{ok:true, kind, data:{syntax_passed,run_ok,output,…}}` / `{ok:false, kind:"error", error:{code,message,category}, data:{parsed_error,…}}` |
+
+其余工具（当前 17 个）**分阶段迁移**，判据是**产出形状**（写在
+`STAGED_OUT_OF_ENVELOPE` 里，经 `envelope_policy()` 公开）：工具自己已返回
+自解释 JSON、上游另有读法（`pipeline.run_check` 读 `run_lint` 的 `ok` 等）的
+先动读法再登记；**新增工具必须直接登记**（契约：新工具走结构化）。
+未登记的工具产出**原样返回**，旧读法不受影响。
+
+**错误信封的 `error` 必须描述真实失败**（`_error_object()` 从
+`error` / `parsed_error` / `message` 里抽，抽不到才退化成对象文本）——
+实测第一版回灌了占位文案「工具报错」，模型拿不到可行动的信息，已修。
+
+**接线**：`core/worker.py::Worker._invoke`（实参归一在 `_parse_args` 之后、
+执行之前；产出入信封在产出检验之后）。去重 / 内容代码块兜底 / 归档三条旁路
+用 `_args_for_read()`（归一但**不报错**），真正的拒绝只发生在 `_invoke`；
+归档读内容时用 `envelope_of()` 取回 `data`（同一份事实，不是第二套读法）。
+
+**为什么未知键必须结构化拒绝**：静默忽略会让模型学不到东西 ——
+它看不到键名写错了，只看到"工具没反应"；结构化错误让它下一轮能改对。
+
+**公开声明**：别名表与信封登记面经 `core/contract.describe()["tool_call_contract"]`
+进入 `/profile`，**不是藏在代码里的隐式约定**；
+门禁 `tests/unit/test_tool_contract.py` 守着"18/18 封闭 + 别名指向真实属性"，
+`tests/unit/test_tool_envelope.py` 守着"登记面非空 + 摘掉登记立刻变红"。
+
+---
+
+## 32. `core/runtime.py`（P14/P15：三个根 + 目标项目根 + 交付物对账）
+
+**职责**：把「东西该写哪、产出落在哪、agent 在哪个代码库上干活」变成**接口事实**。
+来源是用户 2026-10-03 实跑反馈（「没有明确文件输出路径和输出成果」「缺少引入代码工作区的路径」），
+契约 `runtime_paths_and_output_contract`（v1.0.32）。
+
+**依赖**：只依赖标准库（`os` / `hashlib` / `contextvars` / `contextlib` / `datetime` / `re`）。
+
+### 32.1 三个根（进程级；`/profile.runtime` 暴露且保证存在）
+
+| 根 | 环境变量 | 默认 | 语义 |
+|---|---|---|---|
+| `runtime_root` | `AGENT_RUNTIME_ROOT` | 当前工作目录 | 运行数据（会话 / 存储快照） |
+| `workspace_root` | `AGENT_WORKSPACE_DIR` | `<运行根>/workspace` | **草稿区**：可以乱，**不承担交付** |
+| `output_root` | `AGENT_OUTPUT_DIR` | `<运行根>/outputs` | **交付物**落这里才可核对；与工作区根**分开**（用户裁决） |
+
+### 32.2 任务级目标项目根（P15）
+
+```python
+_active_project_root: ContextVar[str | None]
+
+def default_project_root() -> str | None      # 仅来自 AGENT_PROJECT_ROOT（进程级默认）
+def project_root() -> str | None              # 任务级 active 优先
+def project_root_source() -> str              # task | env | none
+def set_project_root(path) -> token           # 不存在 ⇒ ScopeError（不静默落回）
+def reset_project_root(token) -> None
+@contextmanager
+def use_project_root(path)                    # 退出**一定**还原（异常路径也还原）
+def effective_root() -> str                   # project_root() or workspace_root()
+```
+
+* **生命周期 = 任务级**（用户裁决）：`/encode`、`/run` 每次请求带一个；
+  进程级会让「一个进程服务多个项目」不可能。
+* **绝不与 `AGENT_BACKEND_DIR` 混为一谈**：后者是**被测程序自己的源码**（来源核对用）。
+  `describe()["project_root"]["distinct_from_backend_dir"]` 把这件事变成**机判字段**。
+* **消费者**：`read_file` / `write_file` / `list_workspace` / `get_architecture` /
+  `get_module` / `find_symbol`，以及 check / verify 的取根
+  （`core/pipeline.py`、`tools/verify.py`、`core/coding_cycle.py` 的快照与机械事实）。
+
+### 32.3 路径判定与越界拒绝
+
+```python
+class ScopeError(Exception):  # code / message / path / allowed_roots / hint
+def resolve_read(path) -> str     # 可读：目标根 + 输出根
+def resolve_write(path) -> str    # 可写：目标根 + 输出根（契约的「越界即拒」）
+def relative_label(abs_path) -> str
+def scope_error_result(tool, err) -> str   # {ok:false, kind:error, error:{…}}
+```
+
+规则：相对路径以 `effective_root()` 为根；`outputs/`（或 `output/`）前缀指到 `output_root()`；
+绝对路径必须落在允许的根内；`..` 逃逸 ⇒ `out-of-scope-write` / `out-of-scope-read`
+（**结构化拒绝，不静默失败**）。`workspace/` 前缀仍被容忍（兼容旧习惯），
+但工具会在返回值里明说被去掉了。
+
+### 32.4 交付物声明（P14）
+
+```python
+def normalize_declared(raw) -> list[dict]        # {path, sha256?, size?}（容忍字符串）
+def file_fact(abs_path, label=None) -> dict      # {path, sha256, size, exists}
+def check_deliverables(raw, extra_touched=None) -> dict
+```
+
+`check_deliverables()` 返回 `{checked, passed, declared, actual, touched, violations, roots}`：
+* `actual` 是**实际产物** `{path, sha256, size, exists, root}`（没声明时 = 本轮真正写出的文件）；
+* `violations` 结构化：`deliverable-missing` / `deliverable-hash-mismatch` /
+  `deliverable-size-mismatch` / `deliverable-out-of-scope`；
+* **声明了就必须存在且哈希一致**，否则 `CodingCycle` 在 check 之后判
+  `delivery-gap → fail`（`report.deliverables` 与 `/encode` 响应都能读到）。
+
+门禁：`tests/unit/test_project_root.py`（32 项）、`tests/unit/test_deliverables.py`（15 项）、
+`tests/unit/test_arch_map.py`（16 项）、`tests/unit/test_criterion_ownership.py`（13 项）、
+`tests/diagnostics/probe_output_and_map.py`（五段机械取证）。
+
+---
+
+## 33. `core/evidence.py`（P17：pass 的机械证据）
+
+**职责**：回答「这次 `pass` **靠什么**」——把它变成接口事实，而不是约定。
+来源：用户 2026-10-03 定的这一轮目的「在换模型之前把这些功能开发好、验证好边界、
+模型即插即用」；统筹方实测 `SWAP-READY` S3 红（**8 个 pass 里只有 1 个有执行证据，
+而 self_report 11/11**）⇒ 更爱自我宣称的模型会拿到更高的分，**读数不可比**。
+
+**依赖**：标准库 + `core/runtime.py`（只为判断产物是否落在输出根内）。
+
+### 33.1 三类证据（契约 `pass_evidence`，加性）
+
+| `evidence_kind` | 结构 | `checked_by` | 判据 |
+|---|---|---|---|
+| `executed` | `{command, exit_code, expect_exit?, criterion_source}` | `tool` | 判据**真的被执行**，且**退出码被记录** |
+| `artifacts` | `[{path, sha256, size}]` | `tool` | 交付物在**输出根内**且哈希可核（与 P14 一致） |
+| `static_declared` | `{reason}` | `model` | 静态交付物；`reason` 必须**可复核**，空串不算证据 |
+
+```python
+EVIDENCE_KINDS = ("executed", "artifacts", "static_declared")
+UNSUBSTANTIATED_KIND = "unsubstantiated-pass"   # → invalid
+
+def build_evidence(verify, deliverables, *, static_reason="") -> dict
+def pass_allowed(evidence) -> tuple[bool, str]   # P17 的硬判据
+def summarize(evidence) -> str                   # 一行日志
+def describe() -> dict                           # /profile.pass_evidence
+```
+
+`build_evidence()` 按**强 → 弱**取第一档：`executed` → `artifacts` → `static_declared`；
+取不到任何一档时返回 `checked_by="model"` + 空 `evidence_kind`，并把原因写进 `problems`。
+工作区/目标根里的产物**不丢弃**，逐条记进 `excluded_artifacts`（`out-of-output-root` /
+`missing-hash`）——「没算证据」与「没看见」不是一回事。
+
+### 33.2 硬规则与接线
+
+* **硬规则**：`checked_by == "model"` 且 `evidence_kind` 为空 ⇒ **不得记 `pass`**
+  （`outcome=invalid`，`outcome_kind=unsubstantiated-pass`）。
+* **接线点**（唯一 pass 出口，`core/coding_cycle.py`）：产物对账之后、**打检查点之前**
+  —— 证据不成立就不落检查点，否则无效读数会被当成一次成功提交留在历史里。
+* **执行记录来源**：`CheckPipeline.run_verify()` → `check_and_run` 的 `parsed.exit_code`
+  → `SharedMemory.set_verify(exit_code=…)` → `CycleReport.verify.exit_code`。
+  没有退出码的 `passed=True` = 执行事实缺失，门禁当场变红。
+* **出口**：`CycleReport.evidence`（进 `FROZEN_REPORT_KEYS`）、
+  `cycle_end` 事件的 `checked_by` / `evidence_kind` / `evidence`、
+  `/encode` 响应的 `evidence`、`/profile.pass_evidence` 的契约面。
+* **静态交付物的理由**由调用方给：`/encode` 请求字段 `static_reason`（空串不成立）。
+
+门禁：`tests/unit/test_pass_evidence.py`（30 项）、
+`tests/diagnostics/probe_pass_evidence.py`（13 项机械取证，含"抽掉执行记录 ⇒ pass 被拒"）。

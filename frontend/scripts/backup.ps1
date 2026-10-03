@@ -432,6 +432,21 @@ function Invoke-Preflight {
             else { $parts += "typecheck **失败**"; $allOk = $false }
         }
         finally { Pop-Location }
+
+        # ★ 交付新鲜度：`dist` 必须是**当前源码**构建出来的。
+        #
+        #   为什么放进备份前验证：统筹方用 `deploy-freshness.py` 抓到过一次 ——
+        #   源码改了、`npm run build` 没跑，于是**用户看到的不是交付的那一版**。
+        #   根因就在这个函数里：它跑 `typecheck`（会重新生成
+        #   `src/generated/expectations.ts`），**但从不重建 dist**。
+        #   一起打快照，就把"改过的"和"交付的"分了家。
+        Write-Host "  · 交付新鲜度（dist vs 当前源码重建）…" -ForegroundColor DarkGray
+        $outFresh = & $python (Join-Path $root "scripts\freshness.py") 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) { $parts += "dist 新鲜" }
+        else {
+            $parts += "dist **陈旧**（先 npm run build）"
+            $allOk = $false
+        }
     }
     else { $parts += "typecheck 未跑（缺 node_modules 或 npm）" }
 

@@ -77,18 +77,43 @@ if _stale:
     missing = sorted(set(snap["upstream_events"]) - set(ep["upstream"]))
     print(f"  SKIP  推导 == 契约（当前上游落后，契约声明比它多 {missing}）")
     print("       → 设 AGENT_BACKEND_DIR 指向真上游即可验这一条")
-    check("★ 落后的差集**正是**契约新增的那一个（不是别的漂移）",
-          missing == ["verify_skipped"], str(missing))
+    # ★ 这里**不写死名字**：契约每加一个事件，这份名单就变一次，
+    #   写死会让"上游落后"这个真信号变成"我的常数过期了"（§31.3 的教训）。
+    #   真正该守的是**方向**：落后的副本**不许**发出契约没声明的事件。
+    check("★ 落后时**实测 ⊆ 契约**（副本不许发出契约没声明的事件）",
+          set(ep["upstream"]) <= set(snap["upstream_events"]),
+          str(sorted(set(ep["upstream"]) - set(snap["upstream_events"]))))
+    print(f"       落后清单（信息）：{missing}")
 else:
-    check("上游事件数 == 契约 observed.upstream_count",
-          len(ep["upstream"]) == obs["upstream_count"],
-          f"推导={len(ep['upstream'])} 契约={obs['upstream_count']}")
-    check("总数 == 契约 observed.union_count",
-          ep["total"] == obs["union_count"],
-          f"推导={ep['total']} 契约={obs['union_count']}")
-    check("上游事件名单与契约逐条一致",
-          ep["upstream"] == sorted(obs["upstream_kinds"]),
+    # ★ 2026-09-27：**另一个方向**也要按配置分流。
+    #
+    # 上次（§31.3）是"上游落后于契约"；这次是"**上游比契约新**" ——
+    # 上游实装了 `orchestrator_round` / `verify_criterion` / `self_report`
+    # （`core/contract.py:172/181/193`，标 `since="1.2"`），而契约主本还是 v1.0.24。
+    #
+    # 判据与 `partition.check_against_contract()` **同一处事实源**
+    # （`CONTRACT_LAG_KINDS`），不在这里另抄一份名单：
+    #   - **少**：契约有、实测没有 → 真回归，照旧 FAIL（下面的 stale 分支盯着）；
+    #   - **多**：实测有、契约没有，且逐名登记 → 契约滞后，按"契约 + 滞后"比。
+    lag = set(getattr(P, "CONTRACT_LAG_KINDS", frozenset()))
+    expected_upstream = sorted(set(obs["upstream_kinds"]) | lag)
+    expected_total = obs["union_count"] + len(lag)
+    if lag:
+        print(f"  注：已登记的契约滞后 {sorted(lag)}（上游已实装、契约主本尚未声明）"
+              f"→ 期望值按「契约 + 滞后」比")
+    check("上游事件数 == 契约 observed.upstream_count（+ 已登记滞后）",
+          len(ep["upstream"]) == len(expected_upstream),
+          f"推导={len(ep['upstream'])} 期望={len(expected_upstream)}"
+          f"（契约={obs['upstream_count']} + 滞后={len(lag)}）")
+    check("总数 == 契约 observed.union_count（+ 已登记滞后）",
+          ep["total"] == expected_total,
+          f"推导={ep['total']} 期望={expected_total}")
+    check("上游事件名单与契约（+ 已登记滞后）逐条一致",
+          ep["upstream"] == expected_upstream,
           f"推导={ep['upstream']}")
+    check("★ 多出来的**只有**已登记滞后那些（不许有没登记的）",
+          set(ep["upstream"]) - set(obs["upstream_kinds"]) == lag,
+          str(sorted(set(ep["upstream"]) - set(obs["upstream_kinds"]))))
 
 # 下面这些与"上游新旧"无关，任何配置下都必须成立
 check("bridge 事件数 == 契约 observed.bridge_count",
@@ -116,11 +141,13 @@ check("bridge 事件名单与契约逐条一致",
 if _stale:
     print("  SKIP  推导 == 快照常量（上游落后于契约，二者不可比）")
 else:
-    check("推导结果与模块内记录的快照一致",
-          set(ep["upstream"]) == set(P.CONTRACT_RECORDED_UPSTREAM_EVENTS))
-    check("总数常量与记录一致（且 == 契约）",
-          ep["total"] == P.CONTRACT_RECORDED_TOTAL_EVENTS == obs["union_count"],
-          f"{ep['total']} / {P.CONTRACT_RECORDED_TOTAL_EVENTS} / {obs['union_count']}")
+    # 同上：记录的快照来自契约，所以「契约 + 已登记滞后」才是此刻的期望值。
+    lag = set(getattr(P, "CONTRACT_LAG_KINDS", frozenset()))
+    check("推导结果与模块内记录的快照一致（+ 已登记滞后）",
+          set(ep["upstream"]) == set(P.CONTRACT_RECORDED_UPSTREAM_EVENTS) | lag)
+    check("总数常量与记录一致（且 == 契约 + 已登记滞后）",
+          ep["total"] == P.CONTRACT_RECORDED_TOTAL_EVENTS + len(lag) == obs["union_count"] + len(lag),
+          f"{ep['total']} / {P.CONTRACT_RECORDED_TOTAL_EVENTS} / {obs['union_count']} / 滞后 {len(lag)}")
 
 # 判据必须来自「发出方」，不是硬编码名单
 kinds = event_kinds()

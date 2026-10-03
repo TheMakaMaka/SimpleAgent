@@ -36,12 +36,30 @@ function read(rel) {
   return readFileSync(p, 'utf-8')
 }
 
-/** 归约器里 `case 'xxx':` 就是它认得的事件 */
+/**
+ * 前端认得的事件 = 归约器的 `case 'xxx':` ∪ **采集器声明的词表**。
+ *
+ * ★ 为什么第二个来源也要扫（2026-09-27 `TRANSPARENCY-UI`）：
+ * 上游新增的 `orchestrator_round` / `verify_criterion` / `self_report`
+ * 由 `store/transparency.ts` 的 `RECOGNIZED_KINDS` 声明并处理（原因见该文件开头：
+ * 写 `case` 会在"自带旧副本"那种配置下被判成死代码）。
+ *
+ * 只扫 `case` 的话，这份**上报给 `/api/audit` 的前端期望**会少 3 个事件 ——
+ * 而服务端正是拿它判断"服务声明了、前端认不认得"。少报的后果是
+ * **审查会说错话**（把"前端早就认得"报成"前端没跟上"）。
+ * 上报必须与事实一致，否则审查给出的责任判定就是错的。
+ */
 function scanEvents() {
-  const text = read('store/run.ts')
   const set = new Set()
+  const text = read('store/run.ts')
   for (const m of text.matchAll(/case '([a-z_]+)':/g)) set.add(m[1])
   if (!set.size) throw new Error('store/run.ts 里没扫到任何 case —— 归约器结构变了？')
+
+  const collector = read('store/transparency.ts')
+  const decl = collector.match(/export const RECOGNIZED_KINDS = \[(.*?)\]/s)
+  if (decl) {
+    for (const m of decl[1].matchAll(/'([a-z_]+)'/g)) set.add(m[1])
+  }
   return [...set].sort()
 }
 

@@ -175,6 +175,9 @@ class SkillRunner:
             # 技能里**烘焙**的判据算 `caller`：它由技能作者写定，
             # 不是模型自拟的 —— 因此不走 `VERIFY-VACUOUS` 的可采性下限。
             source="caller",
+            # ★ P17：执行记录（真实退出码）—— 技能重放的 pass 也必须带机械证据。
+            exit_code=(vr.get("parsed") or {}).get("exit_code"),
+            expect_exit=vr.get("expect_exit"),
         )
         print(f"[skill] 验证回流 passed={vr.get('passed')} detail={detail[:120]}", flush=True)
 

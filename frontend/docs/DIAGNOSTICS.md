@@ -293,3 +293,141 @@ A2 的四条验收标准（探针、警告、陈旧检测、doctor）**全部通
 **`frontend_asset`** 回答的是另一个问题："**我打开看到的是哪一版**"。
 它从 `dist/index.html` **引用的那个 JS** 读（不是"目录里最新的那个"——
 两者在构建中断时会不一致）。
+
+---
+
+## 8. 「界面上那行字到底有没有」—— 前端视图的机械体检
+
+前面几节查的是**后端**。但有一类失效只在**界面**上：读数算对了、
+组件却把它挂在 `v-if` 后面没显示，或者把事实标错了人 / 取错了字段。
+`vue-tsc` 与 `vite build` **都不执行归约器，也不渲染任何组件** —— 它们抓不到这类问题。
+
+```powershell
+cd frontend
+npm run check:transparency        # 固定样例 + 合成新事件 + C3 夹具 → 真实归约器 + 真实 SSR 渲染，66/66
+cd ..
+python tests\unit\test_transparency_ui.py   # 50 项（含编码门禁与夹具来源核对；缺 node 时 SKIP）
+```
+
+它做四件事，用的都是**生产代码本身**（不是复制的逻辑）：
+
+| 步骤 | 手段 | 抓什么 |
+|---|---|---|
+| 1 | esbuild 把 `src/store/run.ts` **就地打包**，喂进固定样例 `run_20260927_125647_5a3297` 的 77 条事件 | 四块「为什么」视图的**读数**（判据演化/决策依据/模型回合/收尾自述/结局四值） |
+| 2 | 按**上游契约字段**造的合成事件（`orchestrator_round` / `verify_criterion`） | 新事件的读取（含"后端显式前因"与"按 seq 推断"两条来源分开） |
+| 3 | 读 `tests/fixtures/transparency-fixture.json`（**由上游 `core/self_report.fact_check()` 产出**） | 自述 `not_done` 与 `fact_check` 矛盾 |
+| 4 | 用**同一份 vite 配置**做 SSR 构建，`vue/server-renderer` 渲染 `TransparencyPanel.vue` / `VerifyPanel.vue` | 那几行字**真的在 HTML 里**（读数对、面板没显示 = 最阴的失效） |
+
+夹具可复现（**矛盾由后端代码判定，不由前端手写**）：
+
+```powershell
+$env:AGENT_UPSTREAM_DIR="D:\PythonProject\SimpleAgent2_Cycle"
+python tests\diagnostics\make_transparency_fixture.py      # 6/6
+```
+
+### 8.1 它**不能**替代人眼验收
+
+验收标准是"不用翻原始 JSON 就能看懂"，那件事只能由人打开界面确认。
+这个脚本证明的是"归约器给出的读数是对的、那几行字确实渲染出来了"。
+
+### 8.2 编码门禁：改中文源码时别把自己写瞎
+
+`test_transparency_ui.py` 第 `[5]` 组扫 `frontend/src/**/*.{ts,vue}` 的
+**BOM** 与 **GBK 乱码特征**（`锛`/`鈥`/`鏂`/`鐨`…）。
+
+**起因是一次真实事故**：用 PowerShell 5.1 的 `Get-Content -Raw` / `Set-Content`
+往返改一个 `.ts` 文件，中文被读成 GBK 再写成 UTF-8 + BOM ——
+**文件全毁，而 `vue-tsc` 与构建照样通过**。这类损坏只有人眼看界面才会发现，
+所以补一个廉价信号（全库命中 0，不误伤）。
+
+> 顺带一条**误诊陷阱**：`Get-Content`（不带 `-Encoding`）在 PS 5.1 里也按 GBK 读，
+> 于是**正常**的 UTF-8 文件在控制台上就显示成乱码。判断"文件是不是真的坏了"
+> 必须**按字节读**（`[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)`），
+> 别信控制台。
+
+### 8.3 仓库根冒出 `workspace/`：机制已查明
+
+**现象**：`tests/unit/test_isolation.py` 报 `FAIL 仓库根无 workspace/`。
+这个现象**出现过两次**，第一次（10:23）没能复现、当时没留下结论。
+
+**机制**（2026-09-27 第二次复现时查清）：上游的路径是 **CWD 相对**的
+（`os.path.abspath("workspace")`），而 `import core` 会执行 `core/__init__.py`，
+它连带 import 的模块有**建目录的副作用**。所以：
+
+> **任何在仓库根 `import core` 的脚本，都会在仓库根建出 `workspace/`。**
+
+`tests/_bootstrap.py` 早就为这件事切了 CWD（它的模块注释第 2 条），
+但**诊断脚本不走 `_bootstrap`**，于是漏了。
+`tests/diagnostics/make_transparency_fixture.py` 就是这么漏的，
+被 `test_isolation.py` 当场抓住（**这条门禁是有效的，别绕过它**）。
+
+**查这一项**：
+
+```powershell
+python tests\unit\test_isolation.py     # 会直接点出 ['workspace'] 这类 stray 目录
+Get-ChildItem . -Directory | Where-Object Name -in workspace,storage_data,sessions
+```
+
+**修法**：诊断脚本若必须 `import core`，先切到运行根
+（`tests/diagnostics/make_transparency_fixture.py` 的 `_at_runtime_root()` 是现成范例）。
+
+### 8.4 「界面是哪一版」：`dist` 与 `src` 分了家
+
+**这一项单列，因为它造成过真实损害**（用户看到的不是交付的那一版）。
+
+```powershell
+python scripts/freshness.py          # 非 0 = dist 陈旧
+python scripts/freshness.py --fix    # 重建
+python tests/unit/test_dist_freshness.py
+```
+
+判据是"**真的用当前源码构建一遍再逐文件比**"（**不看 mtime**），
+比的是 `dist/index.html` **引用**的那个资源名与内容哈希。
+
+**为什么会发生**（本轮实测的根因，两个时间点）：
+`frontend/scripts/gen-expectations.mjs` 在 **13:43:42** 才改好，
+而 `dist/index.html` 是 **13:43:17** 构建的 —— 早 25 秒；
+之后只跑了 `npm run typecheck`（它**只重新生成**
+`src/generated/expectations.ts`），`npm run build` 再没跑过。
+
+> **`npm run typecheck` 会改 `src/`，但不会改 `dist/`。**
+> 所以"跑过 typecheck"**不等于**"交付物是新的"。
+> 备份 preflight 现在会在 dist 陈旧时**直接失败**（根因就在那个函数里）。
+
+### 8.5 `.ps1` 改完中文变乱码 / 语法错误
+
+```powershell
+python scripts/fix_bom.py             # 幂等：缺 BOM 就补
+python tests/unit/test_ps1_encoding.py
+```
+
+PowerShell 5.1 读 `.ps1` **没有 BOM 就按 ANSI（GBK）解**，于是中文注释变乱码，
+其中一句只要含引号/反斜杠就**直接语法错误**。编辑工具默认写 UTF-8 **无 BOM**，
+所以**每改一次 `.ps1` 就会踩一次** —— 这不是"注意一下"能解决的，所以给了个命令。
+
+### 8.6 「系统跑不起来」：挂钩包装器镜像了上游签名（P5）
+
+**症状**（一次真实阻塞，~6 秒内必现）：
+
+```
+TypeError: install.<locals>._run_verify() takes 2 positional arguments but 3 were given
+```
+
+**它为什么难查**：全量单测**全绿** —— 那个包装器不在测试范围内；
+而症状出现在"跑一次任务"的时候（`core/orchestrator.py:246` 调用 `run_verify(vc, files)`）。
+
+```powershell
+python tests/unit/test_hook_compat.py         # 逐个挂钩点：签名非镜像 + 接得住上游参数（含负向）
+$env:AGENT_BACKEND_DIR="D:\PythonProject\SimpleAgent2_Cycle"
+python tests/diagnostics/hook_verify_e2e.py   # ★ 真跑一次流程并走到 verify（离线，worker 换桩）
+```
+
+**判据**：包装器**不许镜像上游签名**（`(*args, **kwargs)` 透传），
+同步/异步**问上游**（`iscoroutinefunction`）。理由与四条纪律见 `docs/MODULES.md` §20.2。
+
+**"自带旧副本"配置下 SKIP 是正常的**：那份副本的验证接线在 `FIX-VERIFY-WIRING` 之前，
+**本来就走不到 verify** —— 判据取自上游自己（v1.23+ 的 `run_verify` 才有 `files` 参数）。
+
+> **同类教训记两次了**：D9 是 `_emit` 撞名（镜像签名），P5 是 `run_verify` 少一个参数
+> （**同一个毛病在另外九个挂钩点上**）。所以现在"镜像"这件事**写不出来**：
+> 一个工厂 + 一张名单（`HOOK_POINTS`），门禁逐个点查。

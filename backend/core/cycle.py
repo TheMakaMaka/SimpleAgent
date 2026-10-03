@@ -68,6 +68,44 @@ class CycleReport:
     #: （`passed` / `failed` / `skipped`），"未验证"明写、不假装通过。
     check: dict | None = None
     verify: dict | None = None
+    #: ★ 模型**收尾自述**（`TRANSPARENCY-BACKEND` C1）+ 与机械事实的交叉核对（C2）。
+    #:
+    #: 它是**报告**不是门禁：`phase` / `verify` / `commit` 不受它影响。
+    #: `fact_check` 里放"自述与机械事实矛盾"的地方（例：模型说已生成报告，
+    #: 但磁盘上没有那个文件）—— 但**只有 `self_report.ok=false`** 才表示
+    #: 自述本身没生成出来（那也要明写，不静默变成 None 与"没说"混为一谈）。
+    self_report: dict | None = None
+    #: ★ 结局四值 + 判据来源进判定链（`TRANSPARENCY2-BACKEND` P1 / 工作单 D19）。
+    #:
+    #: `outcome ∈ {pass, fail, abstain, invalid}`；`outcome_reason` 是可读理由；
+    #: `verdict` 是结构化版（带 `criterion_source` / `criterion_trust` /
+    #: `criterion_independent`）—— 于是**模型自拟判据的"通过"与调用方判据的
+    #: "通过"不同形**（39 条运行里判据来自调用方的是 0 条，这条必须一眼可辨）。
+    outcome: str = ""
+    outcome_reason: str = ""
+    verdict: dict | None = None
+    #: ★ P17（`pass_evidence`）：这次 `pass` **靠什么**（`checked_by` + `evidence_kind`）。
+    #:
+    #: `{checked_by: tool|model, evidence_kind: executed|artifacts|static_declared|"",
+    #:   executed: {command, exit_code, expect_exit?}, artifacts: [{path, sha256, size}],
+    #:   static_declared: {reason}, excluded_artifacts: [...], problems: [...]}`
+    #: —— 没有它，换模型时"更爱自我宣称的模型会拿到更高的分"，
+    #: 读数不可比。`checked_by=model` 且无 `evidence_kind` ⇒ **不得记 pass**。
+    evidence: dict | None = None
+    #: ★ 原因种类（`core.outcome.KIND_TO_OUTCOME` 的键）。**显式设置**，
+    #: 不靠嗅探错误字符串 —— 嗅探会把"判据写错"记成"模型不行"。
+    outcome_kind: str = ""
+    #: ★ 机械层**复用性**检查结论（P2，阻塞）。
+    reuse_checks: dict | None = None
+    #: ★ ③ 拆解合规审查结论（P3，机械层有否决权）。
+    decompose_review: dict | None = None
+    #: ★ P14 输出契约：**声明的交付物 vs 实际产物**。
+    #:
+    #: `{checked, passed, declared: [{path, sha256?, size?}],
+    #:   actual: [{path, sha256, size, exists, root}], touched, violations}`
+    #: —— 用户要的「**知道做了什么**」在这里落地：没有它，
+    #: 「有没有产出、产出了什么」无法核对（此前 `/profile` 连输出根都没有）。
+    deliverables: dict | None = None
     touched_files: list[str] = field(default_factory=list)
     commit: str | None = None
     rolled_back: bool = False
@@ -118,6 +156,14 @@ class CycleReport:
             "check": self.check,
             "manifest": self.manifest,
             "verify": self.verify,
+            "self_report": self.self_report,
+            "outcome": self.outcome,
+            "outcome_reason": self.outcome_reason,
+            "verdict": self.verdict,
+            "evidence": self.evidence,
+            "reuse_checks": self.reuse_checks,
+            "decompose_review": self.decompose_review,
+            "deliverables": self.deliverables,
             "touched_files": self.touched_files,
             "commit": self.commit,
             "rolled_back": self.rolled_back,
