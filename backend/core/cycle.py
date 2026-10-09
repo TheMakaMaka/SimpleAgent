@@ -106,6 +106,14 @@ class CycleReport:
     #: —— 用户要的「**知道做了什么**」在这里落地：没有它，
     #: 「有没有产出、产出了什么」无法核对（此前 `/profile` 连输出根都没有）。
     deliverables: dict | None = None
+    #: ★ P19（`reasoning_protocol`）：模型用量，**含 `reasoning_tokens`**。
+    #:
+    #: 推理模型的 `reasoning_tokens` 会**先吃掉 `max_tokens` 预算** ⇒ 没有它，
+    #: 换推理模型时"回答变短 / 判据变少"会被误读成模型能力问题 ——
+    #: 那是预算被思考吃掉了，不是模型不行。
+    #: 形如 `{policy, total:{calls,prompt_tokens,completion_tokens,reasoning_tokens,
+    #: reasoning_share}, by_role:{...}, note}`；一次模型都没调用时为 `None`。
+    model_usage: dict | None = None
     touched_files: list[str] = field(default_factory=list)
     commit: str | None = None
     rolled_back: bool = False
@@ -164,6 +172,7 @@ class CycleReport:
             "reuse_checks": self.reuse_checks,
             "decompose_review": self.decompose_review,
             "deliverables": self.deliverables,
+            "model_usage": self.model_usage,
             "touched_files": self.touched_files,
             "commit": self.commit,
             "rolled_back": self.rolled_back,

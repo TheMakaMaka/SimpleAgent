@@ -68,6 +68,22 @@ def _dbg(path_suffix: str, content: str) -> None:
         pass
 
 
+def _assistant_message(content, tool_calls=None, reasoning=None) -> dict:
+    """组装要回灌的 assistant 消息（**P19**）。
+
+    `reasoning_content` 是推理模型思考模式的一部分：**带 `tools` 的后续请求
+    必须把它原样带回**，否则 API 直接 400
+    （`The reasoning_content in the thinking mode must be passed back to the API`）。
+    旧代码把它丢掉了 —— 字段在适配层就没返回，调用点无从补，于是"任何推理模型都撞"。
+    """
+    msg: dict = {"role": "assistant", "content": content}
+    if tool_calls is not None:
+        msg["tool_calls"] = tool_calls
+    if reasoning:
+        msg["reasoning_content"] = reasoning
+    return msg
+
+
 class Worker:
     """子循环：用工具完成单个任务。
 
@@ -124,16 +140,17 @@ class Worker:
             reply = await self.llm.chat(messages, tools=self.tools)
             content = reply.get("content")
             tool_calls = reply.get("tool_calls") or []
+            # ★ P19：推理模型思考模式的回灌字段（不返回它就无从回灌 ⇒ 400）
+            reasoning = reply.get("reasoning_content")
 
             print(f"  [W:{task.id}:{step + 1}] tool_calls={len(tool_calls)} content_len={len(content or '')}", flush=True)
 
             # ============ 情况 1：标准 tool_calls ============
             if tool_calls:
                 empty_count = 0
-                messages.append({
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": [
+                messages.append(_assistant_message(
+                    content,
+                    tool_calls=[
                         {
                             "id": tc.id,
                             "type": "function",
@@ -144,7 +161,8 @@ class Worker:
                         }
                         for tc in tool_calls
                     ],
-                })
+                    reasoning=reasoning,
+                ))
 
                 step_had_error = False
                 fallback_code = _extract_code_block(content) if content else None
@@ -214,10 +232,9 @@ class Worker:
                 code = _extract_code_block(content)
                 if code:
                     fake_id = f"auto_{task.id}_{step}"
-                    messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [{
+                    messages.append(_assistant_message(
+                        None,
+                        tool_calls=[{
                             "id": fake_id,
                             "type": "function",
                             "function": {
@@ -225,7 +242,8 @@ class Worker:
                                 "arguments": json.dumps({"code": code}, ensure_ascii=False),
                             },
                         }],
-                    })
+                        reasoning=reasoning,
+                    ))
                     result_text = await self._invoke(
                         "run_python", json.dumps({"code": code}, ensure_ascii=False)
                     )
@@ -255,7 +273,7 @@ class Worker:
                 # 情况 3：纯文本总结
                 # 「像不像计划」由耦合层判断；默认耦合不识别任何句式
                 if self.coupling.looks_like_plan(content) and step < max_steps - 1:
-                    messages.append({"role": "assistant", "content": content})
+                    messages.append(_assistant_message(content, reasoning=reasoning))
                     messages.append({"role": "user", "content": "不要写计划，直接调用工具。"})
                     continue
 

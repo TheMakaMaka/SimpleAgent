@@ -65,7 +65,7 @@ def render_task_description(skill: Skill, params: dict[str, str]) -> str:
         lines.append("")
         lines.append(
             "【参考实现（来自一次成功运行）】"
-            "注意：参数已变化，**不要照抄**，必须按上面的目标与参数重新实现。"
+            "注意：参数已变化，**不要照抄**，必须按上面的目标、参数重新实现。"
         )
         lines.extend(refs)
 

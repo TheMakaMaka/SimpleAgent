@@ -18,6 +18,13 @@ from core.task import Artifact  # noqa: E402
 
 CLEAN = ("_tmp", "_debug", "__pycache__", ".git")
 
+# ★ 拆解关卡（P18/P20）：本文件测的是 **manifest**（多符号单文件、
+#   缺文件 / 缺符号）。这类声明按 P1（叶任务=单交付物）本就"不合规" ——
+#   要测 manifest 就必须先绕过拆解关卡。这里**显式**关掉，说明"本测试的
+#   主题不是拆解"；关卡自身的默认值与分档行为见
+#   `tests/unit/test_decompose_review.py` 的 `[V4]/[V5]`（那里不设任何环境变量）。
+os.environ["DECOMPOSE_GATE"] = "off"
+
 
 def clean():
     for name in os.listdir(WS):
@@ -50,7 +57,8 @@ class FakeOrchestrator:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", encoding="utf-8") as f:
                 f.write(content)
-            task = Task(id=f"t{i}", description=f"写 {path}")
+            task = Task(id=f"t{i}", description=f"写 {path}",
+                        expected_output=path)
             memory.record(task, TaskResult(
                 task_id=task.id, ok=True, output=f"已写 {path}",
                 artifacts=[Artifact(key=f"t{i}_file_{path}", kind="file", path=path)],

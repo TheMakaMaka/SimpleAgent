@@ -18,7 +18,8 @@ ModelCoupling 存在的意义：把「为了让某个模型跑通而写的补丁
 """
 
 import os
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 PROFILE_ENV = "AGENT_MODEL_PROFILE"
@@ -163,6 +164,75 @@ QWEN_COUPLING = ModelCoupling(
 
 
 # ============================================================
+# 3.5 推理档位与可启用模式（P22-A · 类插件结构）
+# ============================================================
+#: `reasoning_content` 回灌策略的取值。与进程级 `AGENT_REASONING_REPLAY`
+#: （显式覆盖 / 一键关）共用同一套取值。
+REASONING_REPLAY_MODES = ("auto", "never", "always")
+#: 进程级覆盖变量名：显式设置时优先于档位声明（便于 A/B 与排障）。
+REASONING_REPLAY_ENV = "AGENT_REASONING_REPLAY"
+
+
+@dataclass
+class ModelReasoning:
+    """推理模型的档位（`P22-A`）。
+
+    设计目标：**加一个推理模型 = 加一份档位，代码零改动**。
+    所以这里只放"数据"；协议路径由 `core/llm.py` 按这些字段统一裁决。
+
+    ★ 每一项都**可以关**，关掉即回到基线行为：
+
+      · `is_reasoning_model=False` ⇒ 与普通模型走同一条路径；
+      · `replay="never"`           ⇒ 不回灌（`P19` 之前的行为，仅供排障/反向验证）；
+      · `max_thinking_chars=0`     ⇒ 思考长度不限（该约束关闭）。
+    """
+
+    #: 是否是推理模型：决定走哪条协议路径
+    is_reasoning_model: bool = False
+    #: 回灌策略：`auto`（带 tools 回灌 / 不带剥掉）| `never` | `always`
+    replay: str = "auto"
+    #: 预算语义：思考 token 是否计入 `max_tokens`（推理模型为 True）。
+    #: **本轮只声明**：换算规则属 `B1`，写进档位而不是散在代码里。
+    counts_in_max_tokens: bool = True
+    #: 思考长度上限（字符）；`0` = 不限（约束关闭）
+    max_thinking_chars: int = 0
+
+    def problems(self) -> list[str]:
+        """档位声明自身的自洽性（**声明 vs 协议**）。空列表 = 自洽。
+
+        ★ 这条是**会红**的判据：声明为推理模型却把回灌关掉，
+        带 `tools` 的后续请求必然 400（`P19` 的实测原文）。
+        """
+        out: list[str] = []
+        if self.replay not in REASONING_REPLAY_MODES:
+            out.append(
+                f"reasoning.replay={self.replay!r} 不在 {REASONING_REPLAY_MODES}"
+            )
+        if self.is_reasoning_model and self.replay == "never":
+            out.append(
+                "reasoning.is_reasoning_model=True 与 reasoning.replay='never' 冲突："
+                "带 tools 的后续请求必须回灌 reasoning_content，否则 API 400"
+            )
+        if self.max_thinking_chars < 0:
+            out.append("reasoning.max_thinking_chars 不能为负（0 表示不限）")
+        return out
+
+    def modes(self) -> dict[str, bool]:
+        """可启用模式的当前状态（**每一项都能关**）。"""
+        return {
+            "reasoning_model": bool(self.is_reasoning_model),
+            "reasoning_replay": self.replay != "never",
+            "thinking_cap": self.max_thinking_chars > 0,
+        }
+
+
+def env_reasoning_replay() -> str | None:
+    """进程级覆盖值；未设置或非法都返回 `None`（**不静默变成某个极端**）。"""
+    raw = (os.environ.get(REASONING_REPLAY_ENV) or "").strip().lower()
+    return raw if raw in REASONING_REPLAY_MODES else None
+
+
+# ============================================================
 # 4. 完整档位
 # ============================================================
 @dataclass
@@ -178,6 +248,16 @@ class ModelProfile:
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
     limits: ModelLimits = field(default_factory=ModelLimits)
     coupling: ModelCoupling = field(default_factory=lambda: DEFAULT_COUPLING)
+
+    # ---------- P22-A：档位（数据驱动，加模型不改代码） ----------
+    #: 推理档位：协议路径 / 回灌策略 / 预算语义 / 思考上限
+    reasoning: ModelReasoning = field(default_factory=ModelReasoning)
+    #: 模型名匹配片段：`_guess_profile_name` 按它选档 ⇒ 新增模型 = 加一条档位
+    match: tuple[str, ...] = ()
+    #: 档位缺失而回落到 `default` 时为 True —— 让"回落"**可见**，不是静默
+    fallback: bool = False
+    #: 回落到哪一份档位（`fallback=False` 时为空串）
+    fallback_to: str = ""
 
     def __post_init__(self) -> None:
         # 保证 context_window 至少能容下单次生成预算。
@@ -200,19 +280,37 @@ class ModelProfile:
     def from_env(cls, prefix: str = "LLM") -> "ModelProfile":
         """从环境变量构造。这是**唯一**的预算入口。
 
-        {prefix}_MODEL            模型名（用于匹配内置档位）
+        {prefix}_MODEL            模型名（用于匹配档位的 `match` 片段）
         {prefix}_BASE_URL         接入地址
         {prefix}_API_KEY
         {prefix}_CONTEXT_WINDOW   仅给这一个数字，其余预算自动推导
         {prefix}_MAX_TOKENS / _MAX_ROUNDS / _MAX_STEPS / _MAX_ATTEMPTS /
         {prefix}_MAX_ERRORS / _MAX_SAME_TASK / _TEMPERATURE / _TIMEOUT
         {prefix}_COUPLING         default | qwen | none
+        {prefix}_REASONING / _REASONING_REPLAY（auto|never|always）/
+        {prefix}_THINKING_IN_MAX_TOKENS / _THINKING_MAX_CHARS
+                                  P22-A 推理档位的逐项覆盖（**每项都能关**）
         """
-        model = os.getenv(f"{prefix}_MODEL", "qwen2.5:7b")
-        profile_name = os.getenv(f"{prefix}_PROFILE") or _guess_profile_name(model)
+        raw_model = (os.getenv(f"{prefix}_MODEL") or "").strip()
+        explicit_profile = (os.getenv(f"{prefix}_PROFILE") or "").strip()
+        # 先用既有默认模型名猜档位；档位自己声明了默认模型名时以档位为准 ——
+        # 这样"加一份档位"就足以让一个新模型名跑起来，不必改这里的默认值。
+        model = raw_model or "qwen2.5:7b"
+        profile_name = explicit_profile or _guess_profile_name(model)
+        registered = profile_name in _BUILTIN_PROFILES
         base = _BUILTIN_PROFILES.get(profile_name, _BUILTIN_PROFILES["default"])
+        if not registered:
+            # 档位缺失 ⇒ 回落 default，但必须**可见**（不得静默变成某个极端）
+            print(
+                f"[配置] {prefix}_PROFILE={profile_name!r} 未登记，"
+                f"回落 {base.name!r} 档位（回灌策略取 default，不是 never/always）",
+                file=sys.stderr,
+            )
+        if not raw_model:
+            model = base.model
 
-        ctx = int(os.getenv(f"{prefix}_CONTEXT_WINDOW", str(base.capabilities.context_window)))
+        ctx_env = (os.getenv(f"{prefix}_CONTEXT_WINDOW") or "").strip()
+        ctx = int(ctx_env) if ctx_env else base.capabilities.context_window
 
         # 预算覆盖项（未设置则用推导值）
         overrides = {}
@@ -234,7 +332,13 @@ class ModelProfile:
                 except ValueError:
                     pass
 
-        limits = ModelLimits.from_context_window(ctx, **overrides)
+        limits = (
+            # 显式给了窗口 ⇒ 按窗口推导（保持既有行为）
+            ModelLimits.from_context_window(ctx, **overrides) if ctx_env
+            # ★ P22-A：档位声明的"上限默认值"就是默认；显式覆盖仍生效。
+            #   复制一份，避免把内置档位的 limits 对象共享出去被就地改坏。
+            else replace(base.limits, **overrides)
+        )
 
         # 耦合档：可显式指定，默认继承内置档位
         coupling_key = (os.getenv(f"{prefix}_COUPLING") or "").strip().lower()
@@ -263,6 +367,21 @@ class ModelProfile:
                 f"{prefix}_IMAGE_DETAIL", base.capabilities.supports_image_detail),
         )
 
+        # ★ P22-A：推理档位。每一项都能被环境变量覆盖/关掉 ——
+        # 加档位不改代码，排障时也不必改代码。
+        replay_env = (os.getenv(f"{prefix}_REASONING_REPLAY") or "").strip().lower()
+        reasoning = ModelReasoning(
+            is_reasoning_model=_env_bool(
+                f"{prefix}_REASONING", base.reasoning.is_reasoning_model),
+            replay=replay_env or base.reasoning.replay,
+            counts_in_max_tokens=_env_bool(
+                f"{prefix}_THINKING_IN_MAX_TOKENS",
+                base.reasoning.counts_in_max_tokens),
+            max_thinking_chars=int(os.getenv(
+                f"{prefix}_THINKING_MAX_CHARS",
+                str(base.reasoning.max_thinking_chars))),
+        )
+
         return cls(
             name=profile_name,
             model=model,
@@ -272,6 +391,10 @@ class ModelProfile:
             capabilities=capabilities,
             limits=limits,
             coupling=coupling,
+            reasoning=reasoning,
+            match=base.match,
+            fallback=not registered,
+            fallback_to="" if registered else base.name,
         )
 
     # ---------- 校验 ----------
@@ -303,7 +426,55 @@ class ModelProfile:
                 f"[{role}] 模型 {self.model} 未声明 supports_image_input，"
                 "无法承担图像理解任务。"
             )
+        # ★ P22-A：档位声明自身的自洽性（声明 vs 协议）。会红。
+        problems.extend(f"[{role}] {p}" for p in self.reasoning.problems())
         return problems
+
+    # ---------- P22-A：档位视图 ----------
+    def effective_reasoning_replay(self) -> str:
+        """实际生效的回灌策略。解析顺序（每一步都可见）：
+
+        ① 进程级 `AGENT_REASONING_REPLAY`（显式覆盖 / 一键关；非法值不算数）；
+        ② 档位声明 `reasoning.replay`；
+        ③ 默认 `auto` —— 中间值，**不是** `never` / `always` 任一极端。
+        """
+        env = env_reasoning_replay()
+        if env:
+            return env
+        declared = self.reasoning.replay
+        return declared if declared in REASONING_REPLAY_MODES else "auto"
+
+    def tier(self) -> dict:
+        """把"模型差异"作为一个**可机读的档位**暴露（`/profile` 直接转发）。
+
+        覆盖 `P22-A` 点名的全部字段：是否推理模型 · 回灌策略 · 思考 token 的
+        预算语义 · 思考长度上限 · 是否支持图像 · 上限默认值。
+        `fallback` 让"档位缺失回落到默认"成为**可见事实**，而不是静默行为。
+        """
+        return {
+            "profile": self.name,
+            "model": self.model,
+            "fallback": self.fallback,
+            "fallback_to": self.fallback_to or None,
+            "match": list(self.match),
+            "is_reasoning_model": self.reasoning.is_reasoning_model,
+            "reasoning_replay": self.effective_reasoning_replay(),
+            "reasoning_replay_declared": self.reasoning.replay,
+            "reasoning_replay_env": os.environ.get(REASONING_REPLAY_ENV) or None,
+            "thinking_counts_in_max_tokens": self.reasoning.counts_in_max_tokens,
+            "max_thinking_chars": self.reasoning.max_thinking_chars,
+            "supports_image_input": self.capabilities.supports_image_input,
+            "max_images_per_request": self.capabilities.max_images_per_request,
+            "context_window": self.capabilities.context_window,
+            "limits": {
+                "max_tokens": self.limits.max_tokens,
+                "max_rounds": self.limits.max_rounds,
+                "max_steps": self.limits.max_steps,
+                "tool_result_chars": self.limits.tool_result_chars,
+            },
+            "modes": self.reasoning.modes(),
+            "problems": self.reasoning.problems(),
+        }
 
     def describe(self) -> str:
         c, l = self.capabilities, self.limits
@@ -317,6 +488,7 @@ class ModelProfile:
             f"maxtok={l.max_tokens} | rounds={l.max_rounds} | steps={l.max_steps} | "
             f"attempts={l.max_attempts} | tool_chars={l.tool_result_chars} | "
             f"json={c.supports_json_mode} | {vision} | "
+            f"reasoning={'yes' if self.reasoning.is_reasoning_model else 'no'} | "
             f"coupling={self.coupling.notes or 'none'}"
         )
 
@@ -337,14 +509,45 @@ _BUILTIN_PROFILES: dict[str, ModelProfile] = {
         capabilities=ModelCapabilities(context_window=8192, supports_json_mode=True),
         limits=ModelLimits.from_context_window(8192),
         coupling=QWEN_COUPLING,
+        # 数据驱动选档：`_guess_profile_name` 不再知道任何具体模型名。
+        match=("qwen",),
+    ),
+    # ★ P22-A：推理模型档位 —— **加一个推理模型 = 加这一条**（代码零改动）。
+    #   实测来源（P19）：`deepseek-flash` 思考模式返回 `reasoning_content`，
+    #   带 `tools` 的后续请求必须回灌，否则 400。
+    "reasoner": ModelProfile(
+        name="reasoner",
+        model="deepseek-reasoner",
+        capabilities=ModelCapabilities(context_window=65536, supports_json_mode=False),
+        limits=ModelLimits.from_context_window(65536, max_tokens=8192),
+        coupling=DEFAULT_COUPLING,
+        reasoning=ModelReasoning(
+            is_reasoning_model=True,
+            replay="auto",              # 带 tools 回灌 / 不带剥掉（协议要求）
+            counts_in_max_tokens=True,  # 思考先吃掉 max_tokens 预算
+            max_thinking_chars=0,       # 约束关闭（B2 才启用）
+        ),
+        match=("deepseek-reasoner", "deepseek-r1", "deepseek-flash"),
     ),
 }
 
+#: 通过 `register_profile()` 注册的档位名（区别于内置档位）。
+_REGISTERED_PROFILES: set[str] = set()
+
 
 def _guess_profile_name(model: str) -> str:
+    """按**档位自己声明的** `match` 片段选档（数据驱动）。
+
+    刻意不在这里写任何具体模型名 —— 否则"加一个模型"就变成了改代码，
+    而 `P22-A` 的验收正是「加一个推理模型 = 加一份档位、代码零改动」。
+    匹配不到时回落 `default`（**不是** `never` / `always` 任一极端）。
+    """
     m = (model or "").lower()
-    if "qwen" in m:
-        return "qwen"
+    for name, prof in _BUILTIN_PROFILES.items():
+        if name == "default":
+            continue
+        if any(frag and frag.lower() in m for frag in prof.match):
+            return name
     return "default"
 
 
@@ -356,8 +559,25 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 def register_profile(profile: ModelProfile) -> None:
-    """注册自定义档位，供 {prefix}_PROFILE 引用。"""
+    """注册自定义档位，供 `{prefix}_PROFILE` 引用。
+
+    ★ 这是 `P22-A`「加一个推理模型 = 加一份档位、代码零改动」的入口：
+    档位自带 `match` 片段，所以连"按模型名选档"那一步也不需要改代码。
+    """
     _BUILTIN_PROFILES[profile.name] = profile
+    _REGISTERED_PROFILES.add(profile.name)
+
+
+def profile_names() -> list[str]:
+    """已登记档位名（`/profile` 暴露插件面用）。"""
+    return list(_BUILTIN_PROFILES)
+
+
+def profile_source(name: str) -> str:
+    """档位来源：`builtin` / `registered` / `missing`（可机判）。"""
+    if name not in _BUILTIN_PROFILES:
+        return "missing"
+    return "registered" if name in _REGISTERED_PROFILES else "builtin"
 
 
 def get_profile(name: str) -> ModelProfile:

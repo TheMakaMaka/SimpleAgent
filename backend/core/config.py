@@ -20,11 +20,15 @@ from dataclasses import dataclass
 
 from .model_profile import (
     DEFAULT_COUPLING,
+    REASONING_REPLAY_MODES,
     ModelCapabilities,
     ModelCoupling,
     ModelLimits,
     ModelProfile,
+    ModelReasoning,
     get_profile,
+    profile_names,
+    profile_source,
     register_profile,
 )
 
@@ -250,11 +254,15 @@ __all__ = [
     "ModelCoupling",
     "ModelLimits",
     "ModelProfile",
+    "ModelReasoning",
+    "REASONING_REPLAY_MODES",
     "ROLES",
     "RoleNotConfigured",
     "RoleSpec",
     "describe_roles",
     "get_profile",
+    "profile_names",
+    "profile_source",
     "register_profile",
     "resolve_profile",
     "resolve_role",

@@ -47,7 +47,7 @@ python tests/run_unit.py
 | `unit/test_outcome.py` | **结局四值**（P1）：`abstain`（说不出什么叫对）/ `invalid`（判据或环境自身坏了）/ `fail` / `pass` 各构造一次；★ **判据来源进判定链**（模型自拟 vs 调用方的"通过"不同形） |
 | `unit/test_reuse_checks.py` | **机械复用性（P2，硬否决）+ 架构事实层（P4）**：★ 实测那两条"调用了不存在的符号"的判据**必须被抓住**；「用了没导入」阻塞、重复符号/命名只是警告；★ 手写架构文档**被拦下**、AST 渲染件**放行** |
 | `unit/test_reuse_scope.py` | **复用层的作用域**（`REUSE-SYMBOL-SCOPE`/P7b）：★ 同一份正确代码在"有/没有同名文件"两种工作区下**结论必须一致且为 0**；撞车矩阵（变量/参数/self/with/for/except/推导式）；★ **反空洞**：`np.array` 缺 import、`from mylib import f`（无 f）、`t1.bar`（只有 foo）**必须仍然红** |
-| `unit/test_decompose_review.py` | **③ 拆解合规关卡（P3）**：★ **用户那次真实运行的 plan 逐字复刻 → 必须判不通过**；Run A 型分解违反 P3/P4/P6/P7 四条全被抓；合规分解**通过**（不会一律报红）；`block` 模式下**否决权真的生效** |
+| `unit/test_decompose_review.py` | **③ 拆解合规关卡（P3）**：★ **用户那次真实运行的 plan 逐字复刻 → 必须判不通过**；Run A 型分解违反 P3/P4/P6/P7 四条全被抓；合规分解**通过**（不会一律报红）；`block` 模式下**否决权真的生效**；★ **P20**：出厂默认回到 `warn`（止血），且**分档** —— 只有 `undecidable`、没有 `violated` 的拆解**放行**，有 `violated` 才拦下 |
 | `unit/test_tool_contract.py` | **工具调用规范化 + 产出检验（P9）**：18/18 工具 `additionalProperties:false`；别名归一后同义写法**逐字节相同**；★ **传未声明键 ⇒ 结构化拒绝，且工具函数一次都没执行**（证明不是静默忽略）；类型强制/缺省填充；结果信封硬校验；**旧字符串结果仍被 `is_error_result()` 正确识别** |
 | `unit/test_tool_envelope.py` | **产出检验真的接到工具上**（P9 追加验收 ③）：`audit().envelope_tools` **非空**；★ 经 `Worker._invoke` 的产出**就是**信封本体（`{ok,kind,data,error}`）；失败信封的 `error` 描述**真实失败**而非占位文案；★ **反空洞**：摘掉登记 ⇒ 判据立刻变红 **且** Worker 不再套信封；未登记的工具产出原样返回 |
 | `unit/test_project_root.py` | **P15 目标项目根**：三个绝对根都存在且互不混淆；`project_root` **任务级**（`ContextVar`，退出即还原）；★ 换根后扫到的集合**真的变**；★ 越界写 ⇒ 结构化 `out-of-scope-write` **且文件真的没写出去**；与 `AGENT_BACKEND_DIR` 语义分离（同值/异值两向都判） |
@@ -55,6 +55,8 @@ python tests/run_unit.py
 | `unit/test_criterion_ownership.py` | **P13 归因归属**：模型自拟的坏判据 ⇒ `fail`（`delivery-gap`），**只有** `caller` 的坏判据 ⇒ `invalid`（`criterion-broken`）；含语法错 / 缺依赖 / 来源缺失 / 普通断言失败四组对照（**两向都在红**） |
 | `unit/test_arch_map.py` | **P11 可信结构地图**：覆盖率账目（`indexed/skipped/truncated` + `skipped` 逐条理由）；★ 解析失败 ⇒ 进 `skipped`，修好 ⇒ **移回 `indexed`**；超 `limit` ⇒ 逐条 `truncated_items`（禁止静默截断）；新鲜度哈希随内容变；反向索引；范围显式 |
 | `unit/test_pass_evidence.py` | **P17 pass 必须带机械证据**：`checked_by` + `evidence_kind`（`executed{command,exit_code}` / `artifacts{path,sha256,size}` / `static_declared{reason}`）；★ `checked_by=model` 且无类别 ⇒ **不得记 pass**（`invalid/unsubstantiated-pass`，不落检查点）；★ **反空洞**：正常执行仍 pass，抽掉执行记录（`exit_code`）⇒ 同一个 pass 立刻被拒 |
+| `unit/test_reasoning_protocol.py` | **P19 推理模型 `reasoning_content` 协议**：带 `tools` 的后续请求**必须回灌**（不回灌 ⇒ 假端点按官方规则抛 400）；不带 `tools` ⇒ 剥掉；`AGENT_REASONING_REPLAY` 三档；`reasoning_tokens` 进 `client.usage` 并汇总；★ **反空洞**：`never` 下必须复现官方 400 原文 |
+| `unit/test_model_swap.py` | **D43 假换冒烟**：同一个模型换个名字 ⇒ `resolve_profiles()`（`/profile` 数据源）读到新名字 **且** `Worker` 路径真的走通（请求体带新名字）；★ **反空洞**：关掉回灌 ⇒ 同一条路径复现 400（证明验的是路径不是配置） |
 
 上表只列**主要**测试文件；完整清单以 `run_unit.py` 实际收集到的为准。
 

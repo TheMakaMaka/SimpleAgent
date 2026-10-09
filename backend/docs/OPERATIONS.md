@@ -1,6 +1,6 @@
 # 运维与升级手册
 
-> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §47** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 面向日常运维、模型接入与升级回归。架构原理见 `docs/ARCHITECTURE.md`，
 > 模块签名见 `docs/MODULES.md`，流程契约见 `CYCLE.md`。
@@ -197,7 +197,7 @@ $env:WORKER_MODEL="qwen2.5-coder:7b"    # 可省，则继承 ORCH
 | `{ROLE}_MODEL` | 模型名 |
 | `{ROLE}_BASE_URL` | 接入地址 |
 | `{ROLE}_API_KEY` | API Key |
-| `{ROLE}_PROFILE` | 指定内置档位名（`default` / `qwen`），覆盖按模型名的自动推断 |
+| `{ROLE}_PROFILE` | 指定档位名（`default` / `qwen` / `reasoner` 或运行时注册的），覆盖按 `match` 的自动选档；未登记 ⇒ 回落 `default` 且 `tier.fallback=true` |
 | `{ROLE}_CONTEXT_WINDOW` | 上下文窗口（预算推导的输入） |
 | `{ROLE}_COUPLING` | `default` / `qwen` / `none` |
 | `{ROLE}_JSON_MODE` | 布尔：`1`/`true`/`yes`/`on` 为真 |
@@ -210,6 +210,10 @@ $env:WORKER_MODEL="qwen2.5-coder:7b"    # 可省，则继承 ORCH
 | `{ROLE}_MAX_SAME_TASK` | 覆盖同任务重复上限 |
 | `{ROLE}_TEMPERATURE` | 覆盖采样温度 |
 | `{ROLE}_TOOL_RESULT_CHARS` | 覆盖工具结果回灌截断长度 |
+| `{ROLE}_REASONING` | 布尔：把该角色当推理模型（决定协议路径） |
+| `{ROLE}_REASONING_REPLAY` | `auto` / `never` / `always`（档位级回灌策略） |
+| `{ROLE}_THINKING_IN_MAX_TOKENS` | 布尔：思考 token 是否计入 `max_tokens`（声明） |
+| `{ROLE}_THINKING_MAX_CHARS` | 思考长度上限（字符）；`0` = 不限 |
 
 > `{ROLE}_DEBUG_HEAD_CHARS` / `_VERIFY_OUTPUT_CHARS` **不存在**，
 > 对应的 `ModelLimits` 字段也已删除。
@@ -244,6 +248,41 @@ register_profile(ModelProfile(
 
 注册后设 `{ROLE}_PROFILE=my-model` 即可引用。
 
+带推理档位的注册（`P22-A`：加一个模型 = 加一份档位，代码零改动）：
+
+```python
+from core import ModelProfile, ModelReasoning, register_profile, ModelLimits
+
+register_profile(ModelProfile(
+    name="my-reasoner",
+    model="my-reasoner-v1",
+    limits=ModelLimits.from_context_window(65536, max_tokens=8192),
+    reasoning=ModelReasoning(
+        is_reasoning_model=True,
+        replay="auto",              # 带 tools 回灌 / 不带剥掉
+        counts_in_max_tokens=True,  # 思考先吃掉 max_tokens 预算
+        max_thinking_chars=0,       # 思考上限：0 = 关闭
+    ),
+    match=("my-reasoner-v1",),      # 按模型名自动选中，无需改代码
+))
+```
+
+### 2.6 档位与开关怎么读（`P22-A`）
+
+`GET /profile` 里：
+
+| 位置 | 读什么 |
+|---|---|
+| `model_tiers.registry` | 已登记档位名（`default` / `qwen` / `reasoner` / 运行时注册的） |
+| `model_tiers.sources` | 每个档位来源：`builtin` / `registered` |
+| `model_tiers.env_override` | 进程级 `AGENT_REASONING_REPLAY`（未设 ⇒ `null`） |
+| `models[role].tier` | 该角色**生效**的档位：`is_reasoning_model` / `reasoning_replay`（含覆盖）/ `thinking_counts_in_max_tokens` / `max_thinking_chars` / `supports_image_input` / `context_window` / `limits` / `modes` / `fallback` |
+| `models[role].replay_contract_problems` | ★ 档位**声明 vs 实现**的判据：非空即该配置会 400（见 §4.24） |
+
+解析顺序：① 进程级 `AGENT_REASONING_REPLAY` → ② 档位 `reasoning.replay` → ③ `auto`。
+档位缺失时回落 `default` 并置 `tier.fallback=true`、`tier.fallback_to="default"`
+（**可见**，且策略是 `auto` 而非任一极端）。
+
 ---
 
 ## 3. 预算推导表
@@ -275,6 +314,10 @@ register_profile(ModelProfile(
 > `{ROLE}_MAX_TOKENS`。
 
 任何一项都可被同名环境变量覆盖（见 §2.3），覆盖项优先于推导值。
+
+> ★ `P22-A`：**没给** `{ROLE}_CONTEXT_WINDOW` 时，预算默认直接取**档位声明的**
+> `limits`（于是 `reasoner` 档位的 `max_tokens=8192` 生效，而不是被通用推导压回 4096）；
+> 给了窗口才按上表重推。两处都以 `/{ROLE}_MAX_TOKENS` 之类的显式覆盖为最高优先。
 
 ---
 
@@ -1018,10 +1061,14 @@ eport.reuse_checks.blocking）：
 |---|---|
 | passed | **只代表机械条款**通过（P1/P2/P3/P4/P7/P8） |
 | undecidable | 非空 → 覆盖不全（P5/P6 是机械近似，明说判不了） |
-| independent | **alse = 独立审查模型未启用**（REVIEW 未配置）；**不得**当成审查通过 |
+| independent | **false = 独立审查模型未启用**（REVIEW 未配置）；**不得**当成审查通过 |
 
-模式由 DECOMPOSE_GATE 控制：off / warn（默认，留痕不拦）/ lock（否决）。
-真实模型现阶段的分解**几乎必然违反** P3/P6 —— 所以默认不拦，但**每次都算、都进事件**。
+模式由 DECOMPOSE_GATE 控制：off / warn（**默认**，留痕不拦）/ block（否决）。
+`warn` 每次照算、都进事件，只是不拦路；`block` 下不合规拆解被拦下，
+并写明违反哪条原则 + 证据（`outcome_kind=decomposition-violation`）。
+**分档（`P20`）**：`undecidable`（判不了）**不**计入否决 —— 只有 `violated` 才拦。
+默认值是 `warn`（`P18` 曾升到 `block`，实测误否决 ⇒ 先止血退回；待 P2/P5 能判
+再决定是否升 `block`）。
 
 ### 4.18 结局是 `invalid` 且 `outcome_kind=artifact-mismatch`
 
@@ -1156,3 +1203,20 @@ python -c "from storage.store import default_storage;[print(e.payload.get('comma
 
 **出问题先跑**：`python tests/unit/test_pass_evidence.py`、
 `python tests/diagnostics/probe_pass_evidence.py`（含"抽掉执行记录 ⇒ pass 被拒"）。
+
+### 4.24 推理模型报 400（`reasoning_content ... must be passed back`）
+
+**先看** `GET /profile`：
+
+1. `models[role].replay_contract_problems` —— 非空就是配置会 400 的直接判据
+   （档位声明是推理模型，但回灌被关掉了）；
+2. `models[role].tier.reasoning_replay` —— 实际生效的策略；
+   `reasoning_replay_declared` 是档位声明值，`reasoning_replay_env` 是进程级覆盖值。
+   **两者不一致说明 `AGENT_REASONING_REPLAY` 把它压掉了**；
+3. `models[role].tier.fallback` —— 为 `true` 说明该模型名没有匹配到任何档位，
+   回落到 `default`（`reasoning_replay_declared="auto"`，仍会带 tools 回灌，
+   因此**通常不会 400**；但若该模型要求 `always`，请为它加一份档位）。
+
+修法：把 `AGENT_REASONING_REPLAY` 取消（回默认 `auto`），或给该模型
+`register_profile()` 一份 `ModelReasoning(is_reasoning_model=True, replay="auto")` 档位，
+并在模型名里带上 `match` 片段。**不要**设成 `never` —— 那是 `P19` 的 400 成因。

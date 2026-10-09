@@ -834,6 +834,7 @@ class CodingCycle:
             self._emit_snapshot(cycle_id, goal)
             # ★ C1/C2：收尾自述 + 机械事实交叉核对（**不改判定**，只加事实）
             await self._finish_self_report(report, memory, goal)
+            self._attach_model_usage(report)
             return report, memory
 
         self._log(f"\n[结果] cycle 未通过校验: {report.error}")
@@ -846,17 +847,51 @@ class CodingCycle:
         await self._finish_self_report(
             report, memory if memory is not None else SharedMemory(goal=goal), goal
         )
+        self._attach_model_usage(report)
         return report, memory if memory is not None else SharedMemory(goal=goal)
 
+    def _attach_model_usage(self, report: CycleReport) -> None:
+        """★ P19：把模型用量（含 `reasoning_tokens`）汇总进报告。
+
+        为什么必须在**报告**里：推理模型的思考 token 会计入 `max_tokens`。
+        看不到 reasoning 用量时，"这一步没写出代码"与"预算被思考吃光"
+        在读数上同形 —— 换推理模型时会把工装现象读成能力现象。
+        """
+        from .llm import aggregate_usage
+
+        roles: list[tuple[str, object]] = []
+        orch = self.orchestrator
+        if orch is not None:
+            roles.append(("orchestrator", getattr(orch, "llm", None)))
+            orch_worker = getattr(orch, "worker", None)
+            if orch_worker is not None:
+                roles.append(("worker", getattr(orch_worker, "llm", None)))
+        if self.worker is not None:
+            roles.append(("cycle_worker", getattr(self.worker, "llm", None)))
+        # ★ P22-A：把**生效档位**一并写进读数 —— 否则"换了档位之后读数变了"
+        # 会被误读成"模型变强/变弱"（与 scorer 必须进 basis 是同一条规矩）。
+        profile = None
+        for _role, _client in roles:
+            candidate = getattr(_client, "profile", None)
+            if candidate is not None:
+                profile = candidate
+                break
+        report.model_usage = aggregate_usage(roles, profile=profile)
+
     # ---------- 内部 ----------
-    #: ③ 拆解合规关卡的模式：`off` / `warn`（默认，只留痕）/ `block`（否决）。
+    #: ③ 拆解合规关卡的模式：`off` / `warn`（只留痕，**默认**）/ `block`（否决）。
     #:
-    #: **为什么默认不是 `block`**（如实声明，不默默处理）：统筹方自己说
-    #: 「P3 的阈值可能要等**能力基线**出来后再校准 —— 我会同步」。
-    #: 而 7B 现阶段的分解**几乎必然违反** P3/P6（实测 Run A/B 都违反），
-    #: 默认 block 会让每次运行都失败/abstain —— 那不是"严格"，是把门禁变成
-    #: 一句"什么都不能做"。**否决权已经实现并有用例**（`DECOMPOSE_GATE=block`
-    #: 一行开启），请统筹方一句话让我改默认值。
+    #: **为什么默认回到 `warn`**（`P20`，修正统筹方自己派错的 `P18`）：`P18` 把出厂
+    #: 默认升到 `block`，实测当场**误否决**（B1-A：V2 由 pass 变 fail，T9/V4/V6 同类）。
+    #: 统筹方自己写明：「P2/P5 在现有数据形态下 11/11 得不出结论 ⇒ 直接升 `block`
+    #: 会拦下大部分题且其中主要是假阳性」。故**先止血退回 `warn`**；
+    #: 待 P2/P5 能判（`undecidable` 自然减少）后再决定是否升 `block`。
+    #:
+    #: ★ **分档**（P20 要求 2）：`undecidable` **不得**等同于不通过。
+    #: `passed` 只看 `violated` —— 只有"明确违反"才否决；"判不了"只记录、不计入否决。
+    #:
+    #: `DECOMPOSE_GATE` 环境变量保留（`off`/`warn`/`block`）以便灰度与排障 ——
+    #: 但**出厂默认值是 `warn`**：读数必须在被测程序的默认行为上取。
     DECOMPOSE_GATE_DEFAULT = "warn"
 
     def _decompose_gate_mode(self) -> str:
@@ -878,6 +913,11 @@ class CodingCycle:
         review = review_decomposition(
             from_cycle_plan(goal, declared, tasks)
         )
+        # ★ P20：三类分开处理 —— `ok` / `violated` / `undecidable`。
+        # 只有 `violated`（明确违反）才有否决权；`undecidable`（判不了）只记录。
+        # 把"判不了"当不通过，等于让"判据自己判不了"伪装成"任务不合格"。
+        violated = list(review.get("violated") or [])
+        undecidable = list(review.get("undecidable") or [])
         review["gate_mode"] = mode
         report.decompose_review = review
         self._emit(
@@ -888,18 +928,32 @@ class CodingCycle:
             # 「审查未通过」与「运行通过」并存。
             mode=mode,
             applied=bool(mode == "block"),
-            violated=list(review.get("violated") or []),
-            undecidable=list(review.get("undecidable") or []),
+            violated=violated,
+            undecidable=undecidable,
             principles=list(review.get("principles") or [])[:8],
             checked_by=str(review.get("checked_by") or ""),
             independent=bool(review.get("independent")),
             summary=str(review.get("summary") or "")[:400],
         )
         self._log(f"[decompose] {review.get('summary')}")
-        if not review.get("passed") and mode == "block":
+        if violated and mode == "block":
+            # ★ P18：拦下时**必须写明违反了哪一条 + 证据**。
+            # 证据来自 review["principles"] 里 verdict==violated 的条目
+            # （机械层每条原则自带 evidence，可逐条复核）。
+            violated_items = [
+                i for i in (review.get("principles") or [])
+                if i.get("verdict") == "violated"
+            ]
+            evidence_text = "；".join(
+                f"{i.get('principle')}（{i.get('level')}）："
+                + " / ".join(str(e) for e in (i.get("evidence") or [])[:2])
+                for i in violated_items
+            ) or "（无逐条证据）"
             report.error = (
-                f"拆解合规审查**否决**（机械层）：违反 {review.get('violated')} —— "
-                f"{review.get('summary')}。要求：重新拆解，或声明做不到（abstain）；"
+                f"拆解合规审查**否决**（机械层，mode={mode}）："
+                f"违反 {violated} —— {review.get('summary')}。"
+                f"逐条证据：{evidence_text}。"
+                "要求：重新拆解，或声明做不到（abstain）；"
                 "**不得**通过改判据来通过。"
             )
             return True

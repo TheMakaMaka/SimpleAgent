@@ -30,6 +30,8 @@ from core import (
     channel_status,
     describe_roles,
     get_git_status,
+    profile_names,
+    profile_source,
     resolve_profile,
 )
 from core import code_identity
@@ -37,6 +39,7 @@ from core import runtime
 from core.contract import audit as contract_audit
 from core.contract import compare as contract_compare
 from core.contract import describe as contract_describe
+from core.llm import replay_contract_problems
 from core.runtime import ScopeError
 from core.vision import describe as vision_describe
 from storage import RunStore
@@ -625,6 +628,16 @@ async def profile():
         # 前端 bridge 可以直接读这里，而不必再猜上游长什么样。
         # 附 `audit` 便于一眼看出"上游自己有没有破坏契约"。
         "contract": {**contract_describe(), "audit": contract_audit()},
+        # ★ P22-A：**档位（类插件结构）** —— 加一个模型 = 加一份档位、代码零改动。
+        #   暴露"生效的回灌策略 / 预算语义 / 思考上限 / 是否支持图像 / 上限默认值"
+        #   与每个开关的状态，换模型时一眼可比（否则"换档位"会被误读成"换能力"）。
+        "model_tiers": {
+            "registry": profile_names(),
+            "sources": {n: profile_source(n) for n in profile_names()},
+            "env_override": os.environ.get("AGENT_REASONING_REPLAY") or None,
+            "fallback_policy": "档位缺失 ⇒ default 档（replay=auto），"
+                               "并置 tier.fallback=true 使其可见",
+        },
         "models": {
             role: {
                 "profile": prof.name,
@@ -634,6 +647,10 @@ async def profile():
                 "supports_tool_calls": prof.capabilities.supports_tool_calls,
                 "supports_json_mode": prof.capabilities.supports_json_mode,
                 "coupling": prof.coupling.notes or "none",
+                "tier": prof.tier(),
+                # ★ P22-A：**声明 vs 实现**的机械判据（会红）——档位声明"必回灌"
+                # 而实现没回灌时，这里非空。放在 /profile 上，使它不是只在测试里活着。
+                "replay_contract_problems": replay_contract_problems(prof),
                 "limits": {
                     "max_tokens": prof.limits.max_tokens,
                     "max_rounds": prof.limits.max_rounds,

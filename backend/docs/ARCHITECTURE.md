@@ -1,6 +1,6 @@
 # 架构说明
 
-> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §47** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 本文说明**分层与为什么这么分**。流程契约细节见 `CYCLE.md`；
 > 逐模块签名见 `docs/MODULES.md`；运维操作见 `docs/OPERATIONS.md`。
@@ -72,6 +72,11 @@
 所以所有模型自适应都被收拢到 `ModelCoupling`（`core/model_profile.py`），
 它是一个**可以整体丢弃**的数据结构。新模型默认走 `DEFAULT_COUPLING`，
 即**不做任何补偿**，只依赖结构化协议。
+
+★ `P22-A` 起，**协议层的模型差异**（是否推理模型 / `reasoning_content` 回灌策略 /
+思考 token 的预算语义 / 思考长度上限 / 是否支持图像 / 上限默认值）也收进同一入口的
+`ModelReasoning` **档位**：选档按档位自带的 `match` 片段（数据驱动），
+因此**加一个模型 = 加一份档位数据**，工作流与适配层代码都不动（`docs/MODULES.md` §36）。
 
 当前 `ModelCoupling` 的实际使用情况（已核对代码）：
 

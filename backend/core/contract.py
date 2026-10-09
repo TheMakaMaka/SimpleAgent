@@ -255,6 +255,8 @@ FROZEN_REPORT_KEYS: frozenset[str] = frozenset({
     "deliverables",
     # —— P17（`pass_evidence`）：pass 的机械证据（checked_by + evidence_kind） ——
     "evidence",
+    # —— P19（`reasoning_protocol`）：模型用量（含 reasoning_tokens） ——
+    "model_usage",
 })
 
 #: `Snapshot.to_dict()` 必须始终包含这些键（可新增）

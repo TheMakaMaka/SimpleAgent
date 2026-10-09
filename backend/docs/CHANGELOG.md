@@ -3246,6 +3246,344 @@ TOOLLINT state=fail problems=1 tools=18
 
 ---
 
+## 43. P18：**拆解关卡出厂默认升到 `block`**（`decompose_gate_default` · round_id `R-58068c34ba`）
+
+**来源**：用户 2026-10-03 裁决 —— **升到 block**。工作单 P18 的原话：
+
+> `DECOMPOSE_GATE_DEFAULT = "warn"` ⇒ **违反原则时那一轮照样往下走**。
+> 用户这一轮的目的是「**验证好边界**」；**关卡默认关着，边界就只是建议。**
+
+### 43.1 问题（机制层）
+
+| # | 事实 | 位置 |
+|---|---|---|
+| 1 | 关卡默认 `warn`：不合规拆解**留痕但不拦路**，`applied=False` | `core/coding_cycle.py::DECOMPOSE_GATE_DEFAULT` |
+| 2 | 于是"边界"只是建议：违反 P1/P3/P4/P8 的计划照样进入写码 / 验证 | `core/coding_cycle.py::_review_decomposition` |
+| 3 | 拦下时只写了 `violated` 列表与 summary，**逐条证据没进拦下理由** | 同上（`report.error`） |
+
+### 43.2 修法
+
+| # | 做了什么 | 位置 |
+|---|---|---|
+| 1 | `DECOMPOSE_GATE_DEFAULT: "warn" → "block"`；**环境变量保留**（`off`/`warn`/`block`）以便灰度与排障 | `core/coding_cycle.py` |
+| 2 | 拦下时写明**违反哪一条 + 逐条证据**：从 `principles[verdict=violated]` 抽 `evidence` 拼进 `report.error`（`decompose_review` 事件照旧带 `violated` 与 `principles[].evidence`） | `core/coding_cycle.py` |
+| 3 | 顺带修一个 **P18 暴露的交互**：`render_task_description` 的样板文本写了「目标**与**参数」，撞上 P3 的并列词判据 ⇒ **每次技能重放都会被拦**。改为顿号「目标、参数」（语义不变） | `core/skill_runner.py` |
+
+### 43.3 反空洞 / 双向验收（机械输出见评估文档 §4）
+
+| 验收 | 机械输出 |
+|---|---|
+| ★ 不设任何环境变量 ⇒ 默认 `block` | `CodingCycle.DECOMPOSE_GATE_DEFAULT == "block"`；`_decompose_gate_mode() == "block"` |
+| ★ 默认拦下**不合规**拆解 | 计划含并列词「并」⇒ `phase=failed outcome=fail kind=decomposition-violation`，`report.error` 写明 `P3` 与逐条证据 |
+| ★ 默认**放行合规**拆解（双向，不是一律拦死） | 合规计划 ⇒ `phase=record outcome=pass`，事件 `passed=True applied=True` |
+| 灰度仍可用 | `DECOMPOSE_GATE ∈ {off, warn, block}` 逐个覆盖；非法值回落默认 `block` |
+| 留痕可复核 | `decompose_review` 事件：`mode=block / applied=True / violated=['P3'] / principles[P3].evidence` 非空 |
+
+### 43.4 测试夹具的适配（如实记录，**不是放宽门禁**）
+
+默认改成 `block` 后，8 个**测试其他机制**的夹具被这道关卡拦下。处理分三类：
+
+* **修夹具使其合规**（关卡仍然生效）：`test_criterion_ownership` / `test_pass_evidence` /
+  `test_deliverables` 的假编排器补 `expected_output`（真实编排器本来就有）；
+  `test_verify_vacuous` 的任务描述「列出工作区内的文件**和**目录」→「列出工作区内容」；
+  `test_transparency` 的第二轮任务不再点名 `mod.py`（否则与第一轮构成 P4）。
+* **夹具本身必须不合规 → 显式固定关卡模式**（并注释说明理由）：
+  `test_cycle_manifest`（多符号单文件，测 manifest）、`test_reuse_scope` §5
+  （`app.py` 必须同时交付 `app` 与 `ping`，测 P7b 名字撞车）。这两处**显式**
+  `DECOMPOSE_GATE=off`，主题不是拆解；关卡自身的默认与双向行为在
+  `test_decompose_review.py` 的 `[V4]`（**不设任何环境变量**）。
+* **产品样板措辞修正**：见 43.2 #3（技能重放）。
+
+### 43.5 验证
+
+| 测试 | 结果 |
+|---|---|
+| `tests/unit/test_decompose_review.py`（新增 `[V4]` 出厂默认双向验收） | **33/33** |
+| `tests/unit/test_artifact_binding.py`（P8 组改为**显式** `warn`，不再依赖默认值） | **24/24** |
+| 全量单测 | 见 `docs/VERSIONS.md` 的 v1.29 条目（通过数由脚本打印） |
+
+契约面：**事件种类数不变**（18）、**工具数不变**（18）、`PHASE_ORDER` 不变、端点不变、
+`CycleReport` / `Snapshot` / `Event` 字段不变、`.interface_contract/` 覆盖的规则与词表不变
+（本次只改默认值与一处样板措辞）。`decompose_review` 事件的 payload 键**未增**。
+
+---
+
+## 44. P19 推理模型协议 + P20 关卡分档 + D43 假换冒烟（round_id `R-5bfd0ff2e5`）
+
+**来源**：`DISPATCH.md` 顶部的 P19/P20（换模型路上实测炸出来的两件）+ 未决 D41/D43；
+评估文档 `docs/EVALUATION-REASONING-PROTOCOL.md`。
+
+### 44.1 ★ 先把方向说清：P19 工单原文与**实测错误原文相反**
+
+工单表 1 写「组装后续请求的消息历史时，**剥掉** `reasoning_content`」。
+但统筹方自己的实测错误原文是（`04-tests/capability/records.jsonl`）：
+
+```
+BadRequestError: Error code: 400 - {'error': {'message':
+  'The `reasoning_content` in the thinking mode must be passed back to the API.'}}
+```
+
+**这是"必须回灌"（不回灌就 400），不是"禁止回灌"。** DeepSeek 官方
+《Thinking Mode》同样写明：**带 `tools` 的请求**，上几轮的 `reasoning_content`
+必须原样带回；不带 `tools` 时才无需回灌。
+本仓库旧代码在适配层就把它丢了（`chat()` 返回值里没有该字段）⇒ 调用点无从补 ⇒ 400。
+**故本轮按"协议正确"实现，并把这一方向性差异如实上报，由统筹方裁决**（评估文档 §2/§7）。
+
+### 44.2 改法
+
+| # | 改动 | 位置 |
+|---|---|---|
+| 1 | 适配层**唯一判定点** `request_messages()`：带 `tools` ⇒ 回灌；不带 ⇒ 剥掉；`AGENT_REASONING_REPLAY=auto/never/always` 可灰度（`never` 即工单字面行为） | `core/llm.py` |
+| 2 | `chat()` 把 `reasoning_content` 作为**事实**带回，并累计用量（含 `reasoning_tokens`） | `core/llm.py` |
+| 3 | `Worker` 把上一轮的 `reasoning_content` 原样带进 assistant 消息（三个分支统一走 `_assistant_message()`） | `core/worker.py` |
+| 4 | `CycleReport.model_usage`（`aggregate_usage()` 汇总，同步进 `FROZEN_REPORT_KEYS`）：推理 token 先吃 `max_tokens`，看不到它会把"预算被思考吃掉"误读成"模型不行" | `core/llm.py`、`core/cycle.py`、`core/contract.py`、`core/coding_cycle.py` |
+| 5 | **P20**：`DECOMPOSE_GATE_DEFAULT` 由 `block` **退回 `warn`**（止血）；`undecidable` **不得**当作不通过 —— 只有 `violated` 否决 | `core/coding_cycle.py` |
+| 6 | **D43 假换冒烟**：同一个模型换个名字，`resolve_profiles()`（`/profile` 的数据源）与 `Worker` 路径都走通 | `tests/unit/test_model_swap.py` |
+
+### 44.3 ★ 反空洞（"不是把检查关掉"）
+
+* **P19 的判据会红**：假端点按 DeepSeek 规则验收 —— 带 `tools` 的请求里只要
+  assistant 消息缺 `reasoning_content` 就抛**官方 400 原文**；
+  `AGENT_REASONING_REPLAY=never` 时它**必定复现**，`auto` 时走通。
+* **P20 分档双向**：`block` 下"只有 `undecidable`、无 `violated`"的拆解**放行**；
+  "有 `violated`"的拆解**拦下**并写明 P3 + 逐条证据。
+* **D43 路径真的被走**：`never` 下同一条假换路径复现 400 ⇒ 证明不是只验了配置。
+
+### 44.4 验证
+
+| 测试 | 结果 |
+|---|---|
+| `tests/unit/test_reasoning_protocol.py`（新增，P19） | **16/16** |
+| `tests/unit/test_model_swap.py`（新增，D43） | **8/8** |
+| `tests/unit/test_decompose_review.py`（`[V4]` 重写 + 新增 `[V5]` + P19 报告用量） | **32/32** |
+| 全量单测 | 见 `docs/VERSIONS.md` 的 v1.30 条目（通过数由脚本打印） |
+
+契约面：**事件种类数不变**（18）、**工具数不变**（18）、`PHASE_ORDER`/端点/版本轴不变；
+`CycleReport` **加性**多 `model_usage`（同步进 `FROZEN_REPORT_KEYS`）；
+`decompose_review` 事件的 payload 键**未增**。
+
+### 44.5 顺带 D30（U- 类：声明 vs 实现）
+
+机械复查由 `test_doc_invariants.py` 第 8 组（`ISSUE_RULES` 条数）与第 10 组
+（上游事件种类数 + 反向"判据有牙齿"）覆盖，本轮均通过，**无新漂移**；
+`VERSIONS.md` 的「事件 16 → 19」早在 v1.24 已勘误为 18。
+`P20` 带来的默认值变化已同步 `docs/MODULES.md` §28、`docs/OPERATIONS.md` §4.17
+与 `docs/PENDING_DECISIONS.md` C11。
+
+---
+
+## 45. P21 / M1：**上下文链路调用算法（外部记忆库）—— 独立库只做存储与检索**（round_id `R-c0c8ba72e3`）
+
+**来源**：用户 2026-10-03 提议 + 统筹方 `DISPATCH.md` ⓪「**本轮的活只有 M1**：
+存储与检索 + 独立根 + 越界拒绝，**不接模型**」与 `WORK-ORDER.md`【P21】（M1/M2/M3
+三期，**不许跳级**）；评估文档 `docs/EVALUATION-MEMORY-M1.md`。
+
+### 45.1 ★ 先交代这一轮为什么只做这一件（可机判，不是自述）
+
+`ROUND.json` 的 `open_items_for_this_side` 有 7 条，逐条对仓库事实核过去：
+
+| 工单项 | 本轮开始时的事实 | 处置 |
+|---|---|---|
+| **D38** P17 结果信封扩到主流程 | v1.28 已交付（`core/evidence.py` + `test_pass_evidence.py`） | 不重做 |
+| **D39** P18 关卡默认 `block` | v1.29 交付，**v1.30 的 P20 已按工单要求退回 `warn` 并分档** | 不重做 |
+| **D40** P19 `reasoning_content` | v1.30 已交付；`WORK-ORDER.md` P19 的 2026-10-05 更正条明写**已复核通过，不要改** | 不重做 |
+| **D41** P20 退 `warn` + `undecidable` 分档 | v1.30 已交付（`DECOMPOSE_GATE_DEFAULT = "warn"`，否决条件改为 `violated`） | 不重做 |
+| **D43** 假换冒烟 | v1.30 已交付（`test_model_swap.py`） | 不重做 |
+| **D37** P16 多语言 | `DISPATCH.md` 逐字：**「P16（多语言）现在别动」**（用户裁决"随后再上"） | **不动** |
+| **D30** 文档版本号/计数漂移 | v1.24–v1.30 逐轮收口，`test_doc_invariants.py` 第 8/10 组自带反向判据 | 机械复查无新漂移 |
+
+⇒ 唯一**没做过、也没被推迟**的，就是 `DISPATCH.md` 点名的 **P21 M1**。
+（`ROUND.json` 的 `[ ]` 复选框是载荷里的历史文本，不随交付回填 —— 这一条本身
+就是本项目在治的"声明 vs 实现不符"，故在此**逐条对照仓库事实**写明依据。）
+
+### 45.2 新增 `core/context_store/`（独立库，**不接模型**）
+
+| # | 文件 | 内容 |
+|---|---|---|
+| 1 | `core/context_store/units.py` | 单元结构 + 抽取：内容寻址 id（`sha256(source+LF+归一正文)[:16]`）、关键词（调用方给的 + 正文兜底）、**符号引用**（标识符形态，第二路召回的原料）、`file:line` 引用、内容哈希 |
+| 2 | `core/context_store/scope.py` | **独立根**与**越界拒绝**：默认根 `D:\PythonProject\08-memory`（在两侧仓库之外，可机判）、`StoreScopeError`（字段与 `scope_error_result()` 同形）、`..` / 绝对路径 / 库根在仓库内一律结构化拒绝 |
+| 3 | `core/context_store/retrieval.py` | **两路召回**（关键词 / 符号）+ 记分：`keyword_hits`（显式关键词 > 正文子串，带 idf）、`symbol_hits`（`symbol_refs` ∩ 查询符号）；`calibrate()` 只给**候选阈值曲线**与漏召/误召读数 |
+| 4 | `core/context_store/store.py` | `ContextStore`：`write`（内容寻址、幂等、id 碰撞拒绝）/ `read` / `list_units` / `recall` / `calibrate` / `archive` / `profile`；索引 `units.jsonl`（append-only、逐字节可复现） |
+| 5 | `core/context_store/__init__.py` | 包级 `describe()`：阶段 M1、**未接主链路**、默认根、两路召回、归档语义、下一期 |
+
+**四条 M1 验收的落点**：① 可机械复现 = 内容寻址 id + `units.jsonl` 确定性排序
+（重放逐字节相同）；② 越界拒绝 = `StoreScopeError.to_result()`（`ok/kind/error` 信封）；
+③ 库根在仓库之外 = `scope.assert_outside_repos()`（三条仓库逐个前缀比较）；
+④ 归档非删除 = `archive()` 移入 `archive/` + 索引留 `status=archived`，
+**全类没有任何删除方法**（`profile()["delete_path"] is None`）。
+
+### 45.3 统筹方三条硬要求的落点
+
+* **① 判据覆盖漏召 / 误召**：`calibrate()` 逐条给出 `missed` / `false_recalled` /
+  `failures`（`miss` / `false-recall`），并汇总 `miss_rate` / `false_recall_rate` /
+  micro-P/R —— **不看"调用成功"**。探针实测：`micro_recall=0.6`、
+  `miss_rate=0.4`、`false_recall_rate=0.2`（单测里漏召与误召**都被机械读出**）。
+* **② 第二路召回挂在结构索引上**：消费 `symbol_refs`（同一份抽取结果），
+  `structure_lookup.via = "find_symbol|get_module|get_architecture"`，
+  `new_keyword_library = False` —— **没有新建词表 / 向量库**。
+  反空洞：单测里有一个单元**关键词绝对召不回**（关键词与正文都无词面重叠），
+  只有符号路能召回它 ⇒ 第二路不是装饰。
+* **③ 阈值不许定死**：`recall()` **没有阈值参数**（单测用 `inspect.signature` 钉住），
+  返回**全部**带分数的候选；`calibrate()` 只给曲线，`recommended_threshold = None`。
+
+### 45.4 反空洞（"不是把检查关掉"）
+
+* **越界**：断言目标文件**真的没被写出去**（`os.path.exists`），
+  且 `..`、绝对路径、空路径分别命中 `out-of-scope-write` / `empty-path`；
+* **隔离**：库根指进**三个仓库各试一次** ⇒ 都是 `store-root-inside-repo`；
+  环境变量把库根指进仓库**同样被拒**（"默认值好看、一改就没"不成立）；
+* **归档**：归档后 `read()` 仍读得到原文、`archive/` 有副本、计数分得开、
+  重复归档幂等 —— **淘汰不抹证据**；
+* **独立性**：AST 扫描 `core/context_store/` 的 import，断言**不含任何 `core.*` / `tools.*`**
+  （只有标准库与包内相对导入）、`TOOLS_MAP` 仍 18 个、`main.py` 不含 `context_store`。
+
+### 45.5 测试用逃生口（**放宽了就说放宽了**）
+
+本轮硬边界只许写本仓库，而 M1 要求库根在仓库之外 ⇒ 单测无法用默认根。
+故 `assert_outside_repos(..., allow_inside_repos=True)` 与
+`ContextStore(..., allow_inside_repos=True)` 是**测试专用的显式关键字逃生口**：
+只能显式传、生产代码无一处会传、且放宽事实会印在
+`profile()["scope"]["outside_repos"]["relaxed"] = true`（探针 [E] 段可见）。
+**默认值仍是拒绝**（§45.4 的隔离三条证明不传就拦）。
+
+### 45.6 验证
+
+| 测试 | 结果 |
+|---|---|
+| `tests/unit/test_memory_store.py`（新增） | **71/71** |
+| `tests/diagnostics/probe_memory_store.py`（新增，五段机械取证） | 回显见评估文档 §4 逐段粘贴 |
+| 全量单测 / 文档一致性 / 文档不变量 / 文档审查 / 契约符合性 / 前端契约 / 套件卫生 | 见 `docs/VERSIONS.md` 的 v1.31 条目（通过数由脚本打印） |
+
+契约面：**事件种类数不变**（18）、**工具数不变**（18）、`PHASE_ORDER` / 端点 /
+版本轴 / `CycleReport` / `Snapshot` / `Event` / `TOOLS_MAP` 全部未动 ——
+本模块**没有被任何生产代码 import**，`main.py` 一行未改 ⇒ 主链路行为**逐字节不变**。
+`.interface_contract/` 只读未动；对侧仓库与集成工作区未写入。
+
+---
+
+## 46. P21 ★★：**调用分算法必须与模型无关**（纯函数 / 可复现 / 可解释 / 定制加权显式 / 校准可复现 · round_id `R-d11562e8d6`）
+
+**来源**：统筹方 2026-10-05 重新生成载荷时，在 `WORK-ORDER.md`【P21】里**新增了两节** ——
+`★★ 第四条硬要求（用户 2026-10-04 追问「用哪个 / 实思路」后补）—— 调用分算法必须与模型无关`
+与 `★★★ 用户 2026-10-04 的建议：三种 scorer 同台对照，别先禁掉任何一种`。
+`DISPATCH.md` **逐字节未变**（仍是「本轮的活只有 M1：存储与检索 + 独立根 + 越界拒绝，不接模型」）
+⇒ 本轮的活 = 把**已交付的 M1 打分层**补齐到新增的第四条硬要求上；**不跳级做 M2/M3**。
+
+**本轮新内容怎么机判出来的（不是猜）**：`ROUND.json` 自述 `work_order_sha256 = eae6e312c0b12851`
+（实测一致）；把当前 `WORK-ORDER.md` 里那两节**整段删掉**，得到的文件哈希**恰好**是上一轮记录的
+`90ad6f724a1f369d` ⇒ 新内容就是这两节（机械输出见评估文档 `docs/EVALUATION-MEMORY-SCORING.md` §2.1）。
+
+### 46.1 旧打分层的缺口（机械输出）
+
+`git show 949330f:core/context_store/retrieval.py`（v1.31）：
+
+* 搜 `^def score` / `score_breakdown` / `time_decay` / `custom_bonus` / `config_sha256` ⇒ **一条都没有**；
+* `score_parts` 只有两个键：`keyword` / `symbol`。
+
+⇒ 新增四条硬要求里，**① 纯函数入口、② 可复现判据、③ 四项构成（缺时间衰减 / 定制加权）、
+④ 定制加权显式配置、⑤ 校准过程可复现** 全部没有落点。
+
+### 46.2 改动（全部在 `core/context_store/`，**加性 + 收紧**）
+
+| # | 落点 | 内容 |
+|---|---|---|
+| 1 | `retrieval.score(unit, query_context) -> float` | **唯一**打分入口，**恰好两个形参**；不读时钟、不读环境、不调模型、不改入参 |
+| 2 | `retrieval.score_breakdown()` | 返回**四项构成** `lexical` / `symbol` / `time_decay` / `custom`，**四项相加 == 总分**，每项带理由 |
+| 3 | `retrieval.time_decay_factor()` | 时间衰减是**纯函数**：`now` 必须显式给（缺省 ⇒ 不衰减）；`half_life_days=None` ⇒ **默认关闭**（阈值类参数不许拍） |
+| 4 | `retrieval.canonical_config()` / `config_sha256()` | 配置**显式、可校验、可哈希**；未知键 / 缺 `why` / 非法值一律 `ValueError`（结构化拒绝，不静默忽略） |
+| 5 | `retrieval.custom_bonus()` | 定制加权 = `[{why, add, when}]`：**谁 / 在什么条件下 / 加多少**；模型无权决定权重 |
+| 6 | `retrieval.calibrate()` | 记录 `config_sha256` + `samples_sha256` + `curve_sha256` ⇒ **校准过程可复现** |
+| 7 | `recall()` / `basis` | 读数带 `basis = {scorer: "S-A", scorer_kind, model: None, config_sha256}` —— scorer 与 model **并列归因** |
+| 8 | `describe()` / `profile()` / `__init__` | 公开 scorer 身份、四项构成、**S-A 已实现 / S-B、S-C 是 M2 对照臂未实现**，以及「纯函数 / 不接模型」的自陈 |
+| 9 | `STORE_VERSION` | `m1.1` → `m1.2`（召回结果形态变了：四项构成 + `basis` / `config` / `score_explain`） |
+
+### 46.3 为什么这样切（边界）
+
+* **只做 M1 的打分层**：`DISPATCH.md` 未变、逐字「本轮的活只有 M1……不许跳级」⇒ **不实现 M2 的三臂对照**
+  （`S-B` 要引新依赖、`S-C` 要调模型，都越界）。`S-B` / `S-C` 在 `describe()["scorer"]["arms"]` 里
+  **如实标「未实现」**，不假装已有。
+* **时间衰减默认关闭**：半衰期是阈值类参数，第一阶段「只记分、不决策、用数据校准」⇒ 只提供形状与判据，
+  数值留给 M2。
+* **零新依赖**：只用标准库（`hashlib` / `json` / `math` / `datetime`），包内 import 判据仍绿。
+
+### 46.4 反空洞（"不是把检查关掉"）
+
+* 把 `time_decay_factor` 换成**带计数**的打分器 ⇒ 同一条「两次逐位相同」判据**立刻判红**；恢复 ⇒ 回绿；
+* 读时钟的打分器被**时钟 tripwire**（`datetime.now()` 一调用就抛）抓住；
+* 时钟 + 网络**双 tripwire** 下真打分器仍算得出分（不读时钟、不碰网络）；
+* 把四项里的任意一项改掉 ⇒ 同一条「相加 == 总分」判据**立刻判红**；
+* 改一条样本的标注 ⇒ `samples_sha256` 变（指纹真的覆盖样本集）。
+
+### 46.5 验证
+
+| 测试 | 结果 |
+|---|---|
+| `tests/unit/test_memory_scoring.py`（新增） | **63/63** |
+| `tests/unit/test_memory_store.py`（M1 原有，未放宽、未删项） | **71/71** |
+| `tests/diagnostics/probe_memory_scoring.py`（新增，六段机械取证） | 回显见评估文档 §4 |
+| 全量单测 / 文档一致性 / 文档不变量 / 文档审查 / 契约符合性 / 前端契约 / 套件卫生 | 见 `docs/VERSIONS.md` 的 v1.32 条目 |
+
+契约面：**事件 18 种不变、工具 18 个不变**，`PHASE_ORDER` / 端点 / 版本轴 / `CycleReport` /
+`Snapshot` / `Event` / `TOOLS_MAP` 全部未动；本模块**仍无生产消费方**（`main.py` 未引用）
+⇒ 主链路行为逐字节不变。`.interface_contract/` 只读未动；对侧仓库与集成工作区未写入。
+
+## 47. `P22-A`：**模型档位 + 可启用模式（类插件结构）**（round_id `R-5f49cfa62f`）
+
+**来源**：本轮 `ROUND.json` / `DISPATCH.md` ⓪ 与 `WORK-ORDER.md`【P22】A。
+**机判依据（不是猜）**：把当前 `WORK-ORDER.md` 里【P22】整节删掉，剩余文本的
+sha256 **逐位等于**上一轮评估文档记录的值（`eae6e312c0b12851`）；`DISPATCH.md` 同理
+（删掉 ⓪【P22】后 == `c2fe1af135a193bf`）⇒ 本轮新增内容**只有** P22，
+且 DISPATCH 明写「**只做 A（解耦）**、B 本轮不动」。
+
+**改动**（全部加性）：
+① `core/model_profile.py` 新增 `ModelReasoning` 档位
+（`is_reasoning_model` / `replay`(auto|never|always) / `counts_in_max_tokens`
+（预算语义，仅声明）/ `max_thinking_chars`（0=关闭））+ `problems()`（声明自洽，会红）
+与 `modes()`；`ModelProfile` 加 `reasoning` / `match` / `fallback` / `fallback_to`，
+新增 `effective_reasoning_replay()` 与 `tier()`（P22-A 全字段可机读）。
+② **加一个模型 = 加一份档位、代码零改动**：`_guess_profile_name` 改为按各档位
+自带的 `match` 片段选档（**函数里不再有任何具体模型名**）；新增内置档位
+`reasoner`（推理模型、ctx=65536、max_tokens=8192、match=deepseek-*）；
+`register_profile()` 仍是在运行时注册的入口，新增 `profile_names()` /
+`profile_source()`（builtin/registered/missing）。
+③ **上限默认值进档位**：`from_env` 在**未显式给** `_CONTEXT_WINDOW` 时用档位声明的
+`limits` 作为默认（此前一律按窗口重推，会把档位的 `max_tokens=8192` 丢掉）；
+显式窗口 / `_MAX_*` 覆盖仍优先。
+④ `core/llm.py`：策略来源从「只看 `AGENT_REASONING_REPLAY`」改为
+`effective_replay_policy(profile)` = ① 进程级覆盖 → ② 档位声明 → ③ `auto`；
+`request_messages(messages, tools, profile=None)` 仍是**唯一判定点**
+（`profile=None` 时与 P19 行为逐字节一致）；思考上限在回灌处按
+`max_thinking_chars` 截断（默认关闭，`0` 时连副本都不多造）；
+新增 `replay_contract_problems(profile)`（★ **声明 vs 实现**判据，会红）；
+`aggregate_usage(..., profile=None)` 增记 `policy_declared` / `model` /
+`thinking_counts_in_max_tokens`。
+⑤ 暴露面：`/profile` 新增 `model_tiers`，`models[*]` 新增 `tier` 与
+`replay_contract_problems`；`core/coding_cycle.py::_attach_model_usage` 把生效档位带进
+`model_usage`（否则「换档位」与「换模型」会被混读）。
+
+**反空洞（机械输出见评估文档 §4）**：
+① 运行时注册一个新档位 ⇒ 只靠 `match` 被选中，用假 DeepSeek 端点
+（缺回灌即抛官方 400）**跑通一道题**；
+② 请求体 sha256 双向：推理模式关/开（`auto` 下）与基线**同哈希**、`thinking_cap=0`
+同哈希，而 `replay=never` / `cap=2` / `AGENT_REASONING_REPLAY=never` **必变**，
+取消覆盖后**回到同一个哈希**；
+③ `replay_contract_problems` 在真实实现下为空，把 `request_messages` 换成
+「一律剥掉」的坏实现 ⇒ **立刻非空**，换回 ⇒ 又为空；
+④ 一键关回灌 ⇒ 同一个假端点复现官方 400（证明前面的「跑通」不是空转）。
+
+**验证**：新增 `tests/unit/test_model_tiers.py`（33 项）、
+`tests/diagnostics/probe_model_tiers.py`（六段机械取证，31/31）；
+全量单测 52/52、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、
+契约符合性 44/44、前端契约 25/25、套件卫生 4/4。
+
+**契约面零破坏**：事件仍 18 种、工具仍 18 个、`PHASE_ORDER` / `CycleReport` /
+`Snapshot` / `Event` / 端点 / 版本轴未动；`/profile` 与 `model_usage` 的改动均为加性。
+**边界**：B（思考策略）本轮**不动**（DISPATCH 逐字）；思考上限的截断**未对真实推理
+端点实跑**（无端点/密钥），仅在假端点与请求体上取证 —— 如实记在评估文档 §4/§7。
+D30 经机械复查无新漂移。
+
+---
+
 ## 回归基线
 
 任何改动后至少跑：

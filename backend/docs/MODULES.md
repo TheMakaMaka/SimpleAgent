@@ -1,6 +1,6 @@
 # 模块与接口参考
 
-> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
+> **同步至 CHANGELOG §47** —— 本文只描述**当前状态**；修复过程见 `CHANGELOG.md`。
 >
 > 所有签名均从代码实际读出。标 `**(未使用)**` 或 `(预留)` 的表示
 > 定义了但没有消费方——详见 §19 当前不一致清单。
@@ -103,6 +103,20 @@ def matches_error_prefix(self, text: str) -> bool   # (未使用)
 `QWEN_COUPLING`（`plan_hints=("我将","首先我","接下来我","我打算","计划如下")`，
 `error_prefixes=("Error:","错误：","执行异常","失败：")`）。
 
+### `ModelReasoning`（`P22-A` 推理档位）
+
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `is_reasoning_model: bool` | `False` | 是否推理模型（决定走哪条协议路径） |
+| `replay: str` | `"auto"` | 回灌策略：`auto`（带 tools 回灌 / 不带剥掉）/ `never` / `always` |
+| `counts_in_max_tokens: bool` | `True` | 预算语义：思考 token 是否计入 `max_tokens`（**声明**；换算规则属 B1） |
+| `max_thinking_chars: int` | `0` | 思考长度上限（字符）；`0` = 约束关闭 |
+
+```python
+def problems(self) -> list[str]      # 声明自洽（推理模型 + never ⇒ 非空，会红）
+def modes(self) -> dict[str, bool]   # 每个开关的当前状态（每一项都能关）
+```
+
 ### `ModelProfile`
 
 ```python
@@ -116,28 +130,40 @@ class ModelProfile:
     capabilities: ModelCapabilities
     limits: ModelLimits
     coupling: ModelCoupling
+    reasoning: ModelReasoning        # ★ P22-A 推理档位
+    match: tuple[str, ...] = ()      # ★ P22-A 按模型名选档（数据驱动）
+    fallback: bool = False           # ★ P22-A 回落可见
+    fallback_to: str = ""
 ```
 
 ```python
 ModelProfile.from_env(prefix: str = "LLM") -> ModelProfile
 def validate(self, role: str = "LLM") -> list[str]   # 空列表 = 可用
 def describe(self) -> str
+def effective_reasoning_replay(self) -> str
+def tier(self) -> dict               # ★ P22-A 全字段可机读（/profile 转发）
 ```
 
 `from_env` 读取的环境变量：`{prefix}_MODEL`、`_BASE_URL`、`_API_KEY`、
 `_CONTEXT_WINDOW`、`_PROFILE`、`_COUPLING`、`_JSON_MODE`、`_TIMEOUT`，
+推理档位 `_REASONING` `_REASONING_REPLAY` `_THINKING_IN_MAX_TOKENS`
+`_THINKING_MAX_CHARS`，
 以及预算覆盖 `_MAX_TOKENS` `_MAX_ROUNDS` `_MAX_STEPS` `_MAX_ATTEMPTS`
 `_MAX_ERRORS` `_MAX_SAME_TASK` `_TEMPERATURE` `_TOOL_RESULT_CHARS`。
 
 `__post_init__` 会把 `capabilities.context_window` 抬到至少
 `limits.max_tokens`（见 §19 不一致 #6）。
+未显式给 `_CONTEXT_WINDOW` 时，预算默认取**档位声明的** `limits`
+（`P22-A` 的「上限默认值」）；显式窗口或 `_MAX_*` 覆盖优先。
 
-模块级函数：`register_profile(profile)`、`get_profile(name)`。
-内置档位表 `_BUILTIN_PROFILES` 含 `"default"` 与 `"qwen"`；
-`_guess_profile_name(model)` 按模型名含 `"qwen"` 选中 qwen 档。
+模块级函数：`register_profile(profile)`、`get_profile(name)`、
+`profile_names()`、`profile_source(name)`（`builtin` / `registered` / `missing`）。
+内置档位表 `_BUILTIN_PROFILES` 含 `"default"` / `"qwen"` / `"reasoner"`；
+`_guess_profile_name(model)` **按各档位自带的 `match` 片段**选档
+（函数里没有任何具体模型名），匹配不到 ⇒ `default`。
 
-**扩展点**：新增模型只需 `register_profile()` 注册一个档位，
-或用环境变量覆盖；**不需要改工作流代码**。
+**扩展点**：新增模型只需 `register_profile()` 注册一个档位（带 `match` 即可被
+自动选中），或用环境变量覆盖；**不需要改工作流代码**。详见 §36。
 
 ---
 
@@ -159,7 +185,8 @@ class LLMClient:
     async def chat(messages: list[dict],
                    tools: list[dict] | None = None,
                    force_json: bool = False) -> dict
-        # 返回 {"content", "tool_calls", "finish_reason"}
+        # 返回 {"content", "tool_calls", "finish_reason",
+        #       "reasoning_content", "usage", "reasoning_tokens"}
 
     async def chat_json(messages: list[dict]) -> dict
         # 解析失败时返回 {"_parse_failed": True, "_raw": <原文>}
@@ -183,6 +210,23 @@ def _repair_json_text(raw: str) -> str                   # 私有
 失败返回 `None`，**不静默造数据**。
 
 **扩展点**：换模型通常不需要改本文件，只改 `ModelProfile`。
+
+**`P22-A`：回灌策略的判定点收在档位**
+
+```python
+def reasoning_replay_mode() -> str                        # 只看 AGENT_REASONING_REPLAY
+def effective_replay_policy(profile=None) -> str          # ① env → ② 档位 → ③ auto
+def request_messages(messages, tools=None, profile=None) -> list[dict]
+def replay_contract_problems(profile=None) -> list[str]   # ★ 声明 vs 实现（会红）
+def aggregate_usage(named_clients, profile=None) -> dict
+```
+
+* `request_messages` 仍是**唯一判定点**；`profile=None` 时与 `P19` 行为逐字节一致；
+* `profile` 给出时按 `profile.reasoning` 裁决，进程级 `AGENT_REASONING_REPLAY`
+  是**显式覆盖**（`/profile` 的 `tier.reasoning_replay_env` 如实标注）；
+* 思考上限（`max_thinking_chars`，默认 `0` = 关闭）只在回灌处截断，不改变其它字段；
+* `model_usage.policy` / `policy_declared` / `model` / `thinking_counts_in_max_tokens`
+  让「换档位」与「换模型」在读数里分得开。
 
 ---
 
@@ -1540,11 +1584,18 @@ checked_by="tool", independent=False, model_layer{...}}`；
 **接进 cycle 的模式**：`DECOMPOSE_GATE ∈ {off, warn(默认), block}`。
 `warn` 照样算、照样进 `decompose_review` 事件与报告，只是不拦路；
 `block` 才否决（`outcome_kind=decomposition-violation`）。
-为什么默认 `warn`：统筹方自己说"P3 阈值等能力基线校准"，而 7B 现阶段的分解
-**几乎必然违反** P3/P6（实测两次运行都判不通过）。
 
-**门禁**：`tests/unit/test_decompose_review.py`（19 项；含"已知错的分解必须判错"
-与"合规分解必须判过"两个方向）。
+**分档（`P20`，2026-10-04）**：`undecidable`（判不了）**不得**等同于不通过 ——
+只有 `violated` 才有否决权；"判不了"只记录、不计入否决。
+**出厂默认 `warn`**：`P18` 曾把默认升到 `block`，实测当场**误否决**
+（B1-A：V2 由 pass 变 fail，T9/V4/V6 同类；统筹方自己写明 P2/P5 在现有数据形态下
+11/11 得不出结论 ⇒ 直接 `block` 会大量假阳性）。故**先止血退回 `warn`**，
+待 P2/P5 能判（`undecidable` 自然减少）后再决定是否升 `block`。
+`block` 下拦下时必须写明违反哪条原则 + 证据（`report.error` 带逐条证据；
+`decompose_review` 事件带 `violated` 与 `principles[].evidence`）。
+
+**门禁**：`tests/unit/test_decompose_review.py`（已知错的分解必须判错、合规分解
+必须判过，另含 `P20` 的 `[V4]` 默认值与 `[V5]` 分档双向）。
 
 ---
 
@@ -1828,4 +1879,185 @@ def describe() -> dict                           # /profile.pass_evidence
 * **静态交付物的理由**由调用方给：`/encode` 请求字段 `static_reason`（空串不成立）。
 
 门禁：`tests/unit/test_pass_evidence.py`（30 项）、
-`tests/diagnostics/probe_pass_evidence.py`（13 项机械取证，含"抽掉执行记录 ⇒ pass 被拒"）。
+`tests/diagnostics/probe_pass_evidence.py`（13 项机械取证，含"抽掉执行记录 ⇒ pass 被拒"）。---
+
+## 34. `core/context_store/`（P21 / M1：外部记忆库 —— **独立库，不接模型**）
+
+**职责**：把上下文/知识存进**特定单元**，按**时间 / 关键词**分区，
+并给出**两路召回**与**分数**；M1 只做存储与检索。**它不在主链路上**。
+
+> 用户提议 + 统筹方分期（`WORK-ORDER.md`【P21】）：**M1 独立库**（本模块）→
+> **M2 记分不决策**（分数 + 事后判定落盘）→ **M3 接入**（需用户批准、可一键关）。
+> **不许跳级**：在跨模型对比结论出来之前，记忆层不得进主链路。
+
+### 34.1 文件与接口
+
+| 文件 | 接口 |
+|---|---|
+| `core/context_store/units.py` | `build_unit()` / `unit_id()` / `content_sha256()` / `symbol_refs()` / `file_refs()` / `keywords_from()` / `describe()` |
+| `core/context_store/scope.py` | `default_root()` / `assert_outside_repos()` / `resolve_store_path()` / `repo_of()` / `within()` / `StoreScopeError`（`to_dict()` / `to_result()`）/ `describe()` |
+| `core/context_store/retrieval.py` | `recall()` / `calibrate()` / `keyword_hits()` / `symbol_hits()` / `document_frequency()` / `describe()` |
+| `core/context_store/store.py` | `ContextStore`：`write` / `read` / `list_units` / `recall` / `calibrate` / `archive` / `profile` / `root` / `path_of` |
+| `core/context_store/__init__.py` | 包级 `describe()`（阶段 / 是否接主链路 / 根 / 召回 / 归档 / 下一期） |
+
+### 34.2 单元结构（M1 明写「时间 / 关键词 / 符号引用」）
+
+```python
+{
+  "id": "sha256(source + LF + 归一正文)[:16]",   # 内容寻址 ⇒ 同一段上下文同一个 id
+  "created_at": "2026-10-05T17:46:21",           # 时间分区；重复写入**保留最早值**
+  "content": "...",                               # 行尾归一成 LF（CRLF/LF 同 id）
+  "keywords": ["reuse", "false-positive", "..."], # 调用方给的 ∪ 正文兜底抽的
+  "symbol_refs": ["app", "route", "app.route"],   # ★ 第二路召回的原料（纯语法抽取）
+  "refs": [{"file": "a.py", "line": 12}],         # `文件:行`，主张要能指到位置
+  "source": "T9", "sha256": "...", "status": "active", "archived_at": None,
+}
+```
+
+### 34.3 两条硬规则
+
+* **隔离**：库根默认 `D:\PythonProject\08-memory`（**在两侧仓库之外**）；
+  `resolve_store_path()` 拒绝 `..` / 绝对路径 / 空路径；`assert_outside_repos()`
+  连"库根在仓库里"也拒（`store-root-inside-repo`）。
+  错误对象与 `core/runtime.py::scope_error_result()` **同形**（`code`/`message`/`path`/
+  `allowed_roots`/`hint` + `{ok:false,kind:error,error:{…}}`），但**刻意不 import**
+  `core.runtime` —— M1 是独立库。
+* **淘汰 = 归档**：`archive(id)` 把单元移入 `archive/`、索引留 `status=archived` +
+  `archived_at`；`read()` 仍读得到原文；**全类没有删除方法**。
+
+### 34.4 两路召回（**不新建关键词库**）
+
+| 路 | 信号 | 盲点 |
+|---|---|---|
+| `keyword` | 显式关键词 > 正文子串（带 `idf`，`df` 随分数一起记） | **同义不同词**（登录 vs 认证） |
+| `symbol` | `unit.symbol_refs` ∩ 查询符号；`structure_lookup.via = find_symbol` / `get_module` / `get_architecture` | 长任务因果链 |
+
+融合：两路独立命中后按 id 合并，`score = 0.5×lexical + 0.4×symbol + time_decay + custom`
+（四项构成相加 == 总分，见 §35；**权重是显式配置**，M2 校准只改一处）；`paths` 如实写出走了哪几路。
+`recall()` **没有阈值参数**（M1/M2 只记分不决策）；`calibrate()` 给
+**漏召/误召**读数（`missed` / `false_recalled` / `miss_rate` / `false_recall_rate`）
+与**候选阈值曲线**，`recommended_threshold` 恒为 `None`。
+
+### 34.5 测试逃生口（**放宽了就说放宽了**）
+
+本轮硬边界只许写本仓库，而 M1 要求库根在仓库之外 ⇒ 单测/探针用
+`allow_inside_repos=True` 这个**显式关键字**在 `.tmp/` 造临时库根。
+生产代码没有任何一处传它；放宽事实会印在
+`profile()["scope"]["outside_repos"]["relaxed"] = true`，默认值仍是拒绝。
+
+门禁：`tests/unit/test_memory_store.py`（71 项）、
+`tests/diagnostics/probe_memory_store.py`（五段机械取证）。
+**它没有任何生产消费方**（`main.py` 不含 `context_store`，`TOOLS_MAP` 仍 18 个）
+—— 这正是 M1「不接模型」的判据。
+
+## 35. `core/context_store/retrieval.py`（P21 ★★：**与模型无关的调用分算法**）
+
+补的是【P21】2026-10-05 新增的**第四条硬要求**（纯函数 / 可复现 / 可解释 / 定制加权显式 / 校准可复现）。
+只碰打分层：**不新增模块、不引依赖**。
+
+### 35.1 唯一打分入口（纯函数）
+
+```
+score(unit, query_context) -> float           # 恰好两个形参
+score_breakdown(unit, query_context) -> dict  # 同一实现，附四项构成与理由
+```
+
+* 输入只有 **单元内容 + 查询上下文 + 配置权重**（配置在 `query_context["config"]`）；
+* `query_context`：`query` / `terms` / `symbols` / `df` / `total` / `now` / `config`；
+* **不读时钟**（`now` 必须显式给，缺省 ⇒ 时间衰减关闭）、**不读环境**、**不调模型**、**不改入参**；
+* 同一输入两次调用**逐位相同**（`round(..., 9)`；无随机、无时钟、无环境）。
+
+### 35.2 分数构成四项（**相加 == 总分**）
+
+| 项 | 含义 | 默认 |
+|---|---|---|
+| `lexical` | 词法命中（显式关键词 > 正文子串，带 `idf`） | 权 `0.5` |
+| `symbol` | 符号命中（`symbol_refs` ∩ 查询符号，第二路） | 权 `0.4` |
+| `time_decay` | 时间衰减（`base × (factor-1)`，≤ 0） | **关闭**（`half_life_days=None`，参数待 M2 校准） |
+| `custom` | 定制加权（显式规则命中之和） | 空 |
+
+每项都带理由：`detail.lexical.why`（哪个词、哪一路命中）、`detail.time_decay.why` / `factor`、
+`detail.custom.matched[].why`。
+
+### 35.3 定制加权 = 显式配置
+
+```json
+{"custom": [{"why": "用户定制：T9 相关记忆加权", "add": 0.25, "when": {"source": ["T9"]}}]}
+```
+
+* `why`（谁）/ `add`（加多少）/ `when`（什么条件）**三件必填**；
+* `when` 支持的键：`id` / `source` / `keyword` / `symbol` / `content_contains`；
+* **未知键、缺 `why`、非法值一律 `ValueError`**（结构化拒绝，不静默忽略）；
+* 配置可 `json.dumps` 往返 ⇒ 可落盘、可哈希（`config_sha256`）、可复核。**模型无权决定权重。**
+
+### 35.4 校准可复现与归因
+
+* `calibrate()` 额外返回
+  `calibration = {scorer, config, config_sha256, samples, samples_sha256, curve_sha256, reproduce}`；
+  同样本 + 同配置 ⇒ **同曲线哈希**；换配置或换样本 ⇒ 哈希变。
+* `recall()` 返回值带 `basis = {scorer: "S-A", scorer_kind: "deterministic", model: null, config_sha256}`。
+  ★ 这是 ★★★ 那条「**scorer 的选择必须进 `basis`**（与 `model` 并列）」的落点：
+  换 scorer 之后读数变了，不会被误读成"模型变强了"。
+* **三臂对照**：`S-A`（本模块，已实现）· `S-B`（固定嵌入模型）· `S-C`（LLM 打分）
+  —— 后两条是 **M2 的对照臂，本模块刻意未实现**（`describe()["scorer"]["arms"]` 如实标注）。
+
+门禁：`tests/unit/test_memory_scoring.py`（63 项）、
+`tests/diagnostics/probe_memory_scoring.py`（六段机械取证）。
+`STORE_VERSION` 由 `m1.1` 升到 `m1.2`（召回结果形态变了）。
+
+## 36. `P22-A`：**模型档位 + 可启用模式（类插件结构）**
+
+补的是【P22】A：把模型差异收进**档位**（数据），协议路径统一在适配层裁决。
+**B（思考策略）本轮不动**。
+
+### 36.1 档位字段（`core/model_profile.py::ModelReasoning`）
+
+见 §1 的表。`ModelProfile` 另加 `reasoning` / `match` / `fallback` /
+`fallback_to` 四个数据字段。
+
+### 36.2 每个开关都能关，关掉即基线
+
+| 开关 | 关掉的值 | 关掉后的行为 |
+|---|---|---|
+| 推理模式 | `is_reasoning_model=False` | 与普通模型同一条路径（报文与基线**同哈希**） |
+| 思考上限 | `max_thinking_chars=0` | 不截断（报文与基线同哈希） |
+| 回灌覆盖 | `replay="auto"` / 取消 `AGENT_REASONING_REPLAY` | 回到 `P19` 的协议默认 |
+| 逐项环境覆盖 | `{ROLE}_REASONING=0` 等 | 关掉该档位项 |
+
+`replay="never"` / `always` 是**覆盖值**（不是基线）：它们改变报文，
+因此可被机械观测（sha256 指纹，见评估文档 §4）。
+
+### 36.3 加一个模型 = 加一份档位（代码零改动）
+
+* `_guess_profile_name(model)` **不再含任何具体模型名**，按各档位自带的
+  `match` 片段选档；匹配不到 ⇒ `default`（策略 `auto`，**不是**任一极端），
+  且 `tier.fallback=true` + `fallback_to="default"` 使其**可见**；
+* `register_profile()` 是运行时注册入口；`profile_source()` 区分
+  `builtin` / `registered` / `missing`；
+* 内置档位：`default` / `qwen` / `reasoner`
+  （`reasoner` = `is_reasoning_model=True`、`ctx=65536`、`max_tokens=8192`，
+  `match=("deepseek-reasoner","deepseek-r1","deepseek-flash")`）；
+* `from_env` 在**未显式给** `{ROLE}_CONTEXT_WINDOW` 时使用档位声明的
+  `limits` 作为默认（`P22-A` 的「上限默认值」），显式覆盖仍优先。
+
+### 36.4 声明 vs 实现（会红）
+
+```python
+replay_contract_problems(profile) -> list[str]
+```
+
+把样本消息喂进**真实**的 `request_messages`，对照档位声明的策略；不一致即非空。
+`/profile` 的 `models[*].replay_contract_problems` 直接暴露它（使它不只是测试里活着）。
+`ModelProfile.validate()` 也会把 `reasoning.problems()`（如「推理模型 + `never`」）
+并入启动自检。
+
+### 36.5 契约面（加性）
+
+`/profile` 新增 `model_tiers`（registry / sources / env_override / fallback_policy），
+`models[*]` 新增 `tier` 与 `replay_contract_problems`；
+`CycleReport.model_usage` 新增 `policy_declared` / `model` /
+`thinking_counts_in_max_tokens`（`total` / `by_role` / `policy` 等既有键未动）。
+事件种类、`PHASE_ORDER`、`TOOLS_MAP`、端点、版本轴**均未动**。
+
+门禁：`tests/unit/test_model_tiers.py`（33 项）、
+`tests/diagnostics/probe_model_tiers.py`（六段机械取证）。

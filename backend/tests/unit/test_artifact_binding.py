@@ -20,6 +20,8 @@ P7（🔴 符号表必须收模块级赋值）
 P8（`decompose_review` 模式要显式）
 -----------------------------------
 warn 模式下 `passed=False` 不影响运行通过 —— 事件里必须写清 `mode` / `applied`。
+（`P20` 起**出厂默认回到 `warn`**；本组仍**显式**开 `warn`，专测这条语义，
+`block` 下的双向验收在 `tests/unit/test_decompose_review.py` 的 `[V5]`。）
 """
 
 import asyncio
@@ -272,12 +274,19 @@ async def main() -> int:
     bad_plan = plan({"command": "import mod\nassert mod.f() == 'B'", "reason": "x"},
                     [{"path": "mod.py", "role": "实现", "symbols": ["f"]}])
     bad_plan["tasks"][0]["description"] = "写 mod.py 并验证它"    # 含「并」→ P3 违反
-    r8, _m8, s8 = await run_case([bad_plan, DONE, SELF], {"mod.py": SRC_B}, tmp)
+    # ★ P20 起出厂默认回到 warn（P18 曾升到 block，但实测误否决 ⇒ 先止血）；
+    #   本组**显式**开 warn，专测"模式必须写清、warn 不否决"这条语义
+    #   （block 下的双向验收在 test_decompose_review.py 的 [V5]）。
+    os.environ["DECOMPOSE_GATE"] = "warn"
+    try:
+        r8, _m8, s8 = await run_case([bad_plan, DONE, SELF], {"mod.py": SRC_B}, tmp)
+    finally:
+        os.environ.pop("DECOMPOSE_GATE", None)
     ev = s8.saved("decompose_review")
     pl = (ev[-1].payload if ev else {}) or {}
     print(f"  mode={pl.get('mode')!r} applied={pl.get('applied')} "
           f"passed={pl.get('passed')} violated={pl.get('violated')}")
-    OK.check("事件里带 mode（默认 warn）", pl.get("mode") == "warn")
+    OK.check("事件里带 mode（本组显式 warn）", pl.get("mode") == "warn")
     OK.check("★ warn 模式下 applied=False（**没有**用否决权）", pl.get("applied") is False)
     OK.check("此时运行仍可通过（审查未通过 ≠ 运行不通过）", r8.phase.value == "record")
     OK.check("报告里也带 gate_mode", (r8.decompose_review or {}).get("gate_mode") == "warn")

@@ -159,7 +159,7 @@ class MixedWorker:
 def scripted(verify: dict | None, declared: list | None, tasks: list | None = None):
     """两轮脚本：第 1 轮干活，第 2 轮说 done。"""
     t = tasks if tasks is not None else [{
-        "id": "t1", "description": "列出工作区内的文件和目录",
+        "id": "t1", "description": "列出工作区内容",
         "expected_output": "文件列表", "tool_hint": ["list_workspace"],
         "context_refs": [],
     }]
@@ -353,7 +353,7 @@ async def main() -> int:
     print("[6] 先给坏判据被拒 → 换一版引用交付物的判据 → 真的通过（留痕不能丢）")
     print("=" * 74)
     good = {"command": "assert open('report.txt').read().strip()", "reason": "报告非空"}
-    t_list = [{"id": "t1", "description": "列出工作区内的文件和目录",
+    t_list = [{"id": "t1", "description": "列出工作区内容",
                "expected_output": "文件列表", "tool_hint": ["list_workspace"],
                "context_refs": []}]
     t_write = [{"id": "t2", "description": "编写报告保存到 report.txt",

@@ -1,6 +1,6 @@
 # SimpleAgent2_Cycle
 
-> **同步至 CHANGELOG §42** —— 本文只描述**当前状态**；修复过程见 `docs/CHANGELOG.md`。
+> **同步至 CHANGELOG §47** —— 本文只描述**当前状态**；修复过程见 `docs/CHANGELOG.md`。
 
 **一个面向自动编码的标准工作流 —— 模型可替换，不是某个模型的定制产物。**
 
@@ -133,6 +133,11 @@ curl -X POST http://127.0.0.1:8000/encode -H "Content-Type: application/json" -d
 | `docs/EVALUATION-ENVELOPE-WIRING.md` | **变更评估**（P9 追加验收 ③ / D33 后半）：**产出检验真的接到工具上**（`audit().envelope_tools` 非空 + 摘掉登记立刻变红），以及 D30 文档计数漂移的收口 | 要审"机制是接上了还是只建好了"时 |
 | `docs/EVALUATION-OUTPUT-CONTRACT.md` | **变更评估**（P14/P15/P13/P11）：三个绝对根 + **任务级目标项目根** + **交付物对账**；verify 归因看判据来源；结构地图的覆盖率/新鲜度/范围/反向索引 | 要审"东西写哪、交付了什么、这次读数算不算数"时 |
 | `docs/EVALUATION-PASS-EVIDENCE.md` | **变更评估**（P17）：**pass 必须带机械证据**（`checked_by` + `evidence_kind`：`executed`/`artifacts`/`static_declared`）；没有执行记录 ⇒ 不得记 pass | 要审"这个 pass 是靠什么通过的、换模型后读数还可比吗"时 |
+| `docs/EVALUATION-DECOMPOSE-GATE-BLOCK.md` | **变更评估**（P18）：拆解关卡出厂默认曾从 `warn` 升到 `block`（**已由 P20 修正回 `warn` + `undecidable` 分档**，见下一行） | 要审"边界是建议还是门禁"时 |
+| `docs/EVALUATION-REASONING-PROTOCOL.md` | **变更评估**（P19/P20/D43）：推理模型 `reasoning_content` 协议（**带 `tools` 必须回灌** —— 与工单字面相反，附官方 400 原文与反空洞）；拆解关卡退回 `warn` + `undecidable` 分档；**假换**冒烟走通换模型路径 | 要审"换模型这条路本身能不能走通、关卡会不会误否决"时 |
+| `docs/EVALUATION-MEMORY-M1.md` | **变更评估**（P21 / M1）：**外部记忆库**的独立库（`core/context_store/`）—— 存储与检索 + **独立根** + 越界拒绝 + **归档非删除**；两路召回（关键词 / 结构符号）+ 漏召/误召读数；**只记分不决策、不接模型** | 要审"记忆层会不会把上下文限制换成看不见的检索错误"时 |
+| `docs/EVALUATION-MEMORY-SCORING.md` | **变更评估**（P21 ★★）：**调用分算法必须与模型无关** —— `score(unit, query_context)` 唯一纯函数入口、四项构成相加 == 总分（时间衰减默认关闭）、定制加权显式配置（非法即拒）、校准三指纹可复现；**S-A 已实现 / S-B、S-C 如实标未实现** | 要审「记忆层的调用分会不会随模型变、换 scorer 会不会被误读成换模型」时 |
+| `docs/EVALUATION-MODEL-TIERS.md` | **变更评估**（P22-A）：**模型档位 + 可启用模式（类插件结构）** —— 加一个推理模型 = **加一份档位、代码零改动**；档位缺失回落 `default`+`auto`（不是极端，且`fallback` 可见）；每个开关关掉 = 基线**同哈希**；`replay_contract_problems` 把「声明 vs 实现」变成**会红**的判据 | 要审「换模型要不要改代码、读数会不会把换档位读成换能力」时 |
 | `能力评估报告.md` | **能力边界实测**：8 级难度阶梯结果、失败根因分类 | 想知道"它现在能干什么" |
 | `docs/CHANGELOG.md` | **修复记录**：已验证的修复 + 可复现验证命令 + 尚未修复清单 | **排查某问题是否已修时先看这里** |
 | `docs/VERSIONS.md` | **备份点记录**：每个版本的 commit、改了什么、验证结果、**精确回退命令** | 要回退到某个已验证状态时 |

@@ -1204,3 +1204,207 @@ fb248b1 v1.25: P9 TOOLCALL-NORM：工具调用规范化 + 工具产出检验（�
 ```
 
 ---
+
+## v1.29 — 2026-10-04 00:31
+
+**改动**：P18 拆解关卡出厂默认由 warn 升到 block（round_id R-58068c34ba；用户 2026-10-03 裁决 D39）。① core/coding_cycle.py::DECOMPOSE_GATE_DEFAULT = block（DECOMPOSE_GATE 环境变量保留 off/warn/block 以便灰度）；② 拦下理由补逐条证据（从 principles[verdict=violated] 抽 evidence 拼进 report.error；decompose_review 事件照旧带 violated + principles[].evidence）；③ block 默认暴露并修掉一处交互：core/skill_runner.py::render_task_description 样板文本「目标与参数」撞 P3 并列词判据 ⇒ 每次技能重放都会被拦，改顿号「目标、参数」（语义不变）；④ 验收双向（tests/unit/test_decompose_review.py [V4]，不设任何环境变量）：不合规（含并列词「并」）⇒ phase=failed outcome=fail kind=decomposition-violation 且 error 写明 P3 + 逐条证据；合规 ⇒ phase=record outcome=pass，事件 passed=True applied=True；环境变量 off/warn/block 仍可覆盖、非法值回落 block。8 个测试其他机制的夹具被新默认拦下，按三类适配（如实记录在 CHANGELOG §43.4 与评估文档 §3）：5 个修夹具使其合规（criterion_ownership/pass_evidence/deliverables 补 expected_output；verify_vacuous 描述去并列词；transparency 第二轮不再点名 mod.py 以免 P4），2 个夹具本身必须不合规故显式 DECOMPOSE_GATE=off（cycle_manifest 多符号单文件测 manifest；reuse_scope §5 app.py 必须同时交付 app/ping 测 P7b），1 个是产品样板措辞修正（skills）。验证：全量单测 47/47、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/CycleReport/Snapshot/端点/版本轴未动，decompose_review payload 键未增，.interface_contract/ 只读未动；D30 经机械复查无新漂移，顺带修 MODULES §28 门禁项数 19→33 与 OPERATIONS §4.17 两处历史控制字符损坏。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.29:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.29:"`
+
+**验证**：
+- 全量单测 PASS (47/47)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 36 个 · 测试文件 47 个
+
+**本次提交的文件**：
+```
+b23dfad v1.29: P18 拆解关卡出厂默认由 warn 升到 block（round_id R-58068c34ba；用户 2026-10-03 裁决 D39）。① core/coding_cycle.py::DECOMPOSE_GATE_DEFAULT = block（DECOMPOSE_GATE 环境变量保留 off/warn/block 以便灰度）；② 拦下理由补逐条证据（从 principles[verdict=violated] 抽 evidence 拼进 report.error；decompose_review 事件照旧带 violated + principles[].evidence）；③ block 默认暴露并修掉一处交互：core/skill_runner.py::render_task_description 样板文本「目标与参数」撞 P3 并列词判据 ⇒ 每次技能重放都会被拦，改顿号「目标、参数」（语义不变）；④ 验收双向（tests/unit/test_decompose_review.py [V4]，不设任何环境变量）：不合规（含并列词「并」）⇒ phase=failed outcome=fail kind=decomposition-violation 且 error 写明 P3 + 逐条证据；合规 ⇒ phase=record outcome=pass，事件 passed=True applied=True；环境变量 off/warn/block 仍可覆盖、非法值回落 block。8 个测试其他机制的夹具被新默认拦下，按三类适配（如实记录在 CHANGELOG §43.4 与评估文档 §3）：5 个修夹具使其合规（criterion_ownership/pass_evidence/deliverables 补 expected_output；verify_vacuous 描述去并列词；transparency 第二轮不再点名 mod.py 以免 P4），2 个夹具本身必须不合规故显式 DECOMPOSE_GATE=off（cycle_manifest 多符号单文件测 manifest；reuse_scope §5 app.py 必须同时交付 app/ping 测 P7b），1 个是产品样板措辞修正（skills）。验证：全量单测 47/47、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/CycleReport/Snapshot/端点/版本轴未动，decompose_review payload 键未增，.interface_contract/ 只读未动；D30 经机械复查无新漂移，顺带修 MODULES §28 门禁项数 19→33 与 OPERATIONS §4.17 两处历史控制字符损坏。
+ CYCLE.md                                |   2 +-
+ README.md                               |   3 +-
+ core/coding_cycle.py                    |  36 +++-
+ core/skill_runner.py                    |   2 +-
+ docs/ARCHITECTURE.md                    |   2 +-
+ docs/CHANGELOG.md                       |  62 ++++++
+ docs/EVALUATION-DECOMPOSE-GATE-BLOCK.md | 336 ++++++++++++++++++++++++++++++++
+ docs/MODULES.md                         |  11 +-
+ docs/OPERATIONS.md                      |  10 +-
+ docs/PENDING_DECISIONS.md               |  23 +--
+ tests/unit/test_artifact_binding.py     |  12 +-
+ tests/unit/test_criterion_ownership.py  |   3 +-
+ tests/unit/test_cycle_manifest.py       |  10 +-
+ tests/unit/test_decompose_review.py     |  88 ++++++++-
+ tests/unit/test_deliverables.py         |   3 +-
+ tests/unit/test_pass_evidence.py        |   2 +-
+ tests/unit/test_reuse_scope.py          |   6 +
+ tests/unit/test_transparency.py         |   5 +-
+ tests/unit/test_verify_vacuous.py       |   4 +-
+ 19 files changed, 574 insertions(+), 46 deletions(-)
+```
+
+---
+
+## v1.30 — 2026-10-04 14:00
+
+**改动**：P19 推理模型 reasoning_content 协议 + P20 关卡分档 + D43 假换冒烟（round_id R-5bfd0ff2e5）。★ P19 方向性分歧：工单表 1 写『剥掉 reasoning_content』，但统筹方实测错误原文与 DeepSeek 官方《Thinking Mode》都说『带 tools 的请求必须回灌』（不回灌才 400），本仓库旧代码在适配层就丢了该字段 ⇒ 任何推理模型都撞。本轮按协议正确实现：core/llm.py 新增唯一判定点 request_messages()（带 tools 回灌 / 不带剥掉）+ AGENT_REASONING_REPLAY=auto/never/always 灰度（never 即工单字面行为）；chat() 把 reasoning_content 作为事实带回并累计用量（含 reasoning_tokens）；core/worker.py 新增 _assistant_message() 把上一轮 reasoning 原样带进 assistant 消息（三处分支）；CycleReport.model_usage（aggregate_usage 汇总，进 FROZEN_REPORT_KEYS）让『预算被思考吃掉』不再被误读成模型不行。P20 修正 P18：DECOMPOSE_GATE_DEFAULT 由 block 退回 warn 止血（实测 B1-A 误否决：V2 由 pass 变 fail），并要求分档 —— _review_decomposition 的否决条件由 not passed 改为 violated，undecidable（判不了）只记录、不计入否决。D43 假换冒烟：同一模型换名 ⇒ resolve_profiles()（/profile 数据源）与 Worker 路径都走通。反空洞（机械输出见评估文档 §4）：测试内假端点按 DeepSeek 规则验收，带 tools 且 assistant 缺 reasoning_content 就抛官方 400 原文 ⇒ 不回灌必复现、回灌走通；P20 [V5] 只有 undecidable ⇒ 放行 / 有 violated ⇒ 拦下（双向）；D43 关掉回灌 ⇒ 同一路径复现 400。验证：新增 test_reasoning_protocol.py 16/16、test_model_swap.py 8/8；test_decompose_review.py 重写 [V4]+新增 [V5]+报告用量 32/32；全量 49/49、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/Snapshot/Event/端点/版本轴未动，CycleReport 加性加 model_usage，decompose_review payload 键未增。★ 未做真实推理端点实跑（无端点/密钥，会写 workspace），已如实列在评估文档。★ 请统筹方裁决 P19 方向（维持协议正确 vs 改 AGENT_REASONING_REPLAY=never）。D30 机械复查无新漂移；P20 默认值变化已同步 MODULES §28/OPERATIONS §4.17/PENDING C11，并把 4 个测试里『P18 起默认 block』的陈旧注释改成与实现一致。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.30:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.30:"`
+
+**验证**：
+- 全量单测 PASS (49/49)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 36 个 · 测试文件 49 个
+
+**本次提交的文件**：
+```
+a7ef862 v1.30: P19 推理模型 reasoning_content 协议 + P20 关卡分档 + D43 假换冒烟（round_id R-5bfd0ff2e5）。★ P19 方向性分歧：工单表 1 写『剥掉 reasoning_content』，但统筹方实测错误原文与 DeepSeek 官方《Thinking Mode》都说『带 tools 的请求必须回灌』（不回灌才 400），本仓库旧代码在适配层就丢了该字段 ⇒ 任何推理模型都撞。本轮按协议正确实现：core/llm.py 新增唯一判定点 request_messages()（带 tools 回灌 / 不带剥掉）+ AGENT_REASONING_REPLAY=auto/never/always 灰度（never 即工单字面行为）；chat() 把 reasoning_content 作为事实带回并累计用量（含 reasoning_tokens）；core/worker.py 新增 _assistant_message() 把上一轮 reasoning 原样带进 assistant 消息（三处分支）；CycleReport.model_usage（aggregate_usage 汇总，进 FROZEN_REPORT_KEYS）让『预算被思考吃掉』不再被误读成模型不行。P20 修正 P18：DECOMPOSE_GATE_DEFAULT 由 block 退回 warn 止血（实测 B1-A 误否决：V2 由 pass 变 fail），并要求分档 —— _review_decomposition 的否决条件由 not passed 改为 violated，undecidable（判不了）只记录、不计入否决。D43 假换冒烟：同一模型换名 ⇒ resolve_profiles()（/profile 数据源）与 Worker 路径都走通。反空洞（机械输出见评估文档 §4）：测试内假端点按 DeepSeek 规则验收，带 tools 且 assistant 缺 reasoning_content 就抛官方 400 原文 ⇒ 不回灌必复现、回灌走通；P20 [V5] 只有 undecidable ⇒ 放行 / 有 violated ⇒ 拦下（双向）；D43 关掉回灌 ⇒ 同一路径复现 400。验证：新增 test_reasoning_protocol.py 16/16、test_model_swap.py 8/8；test_decompose_review.py 重写 [V4]+新增 [V5]+报告用量 32/32；全量 49/49、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4。契约面零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/Snapshot/Event/端点/版本轴未动，CycleReport 加性加 model_usage，decompose_review payload 键未增。★ 未做真实推理端点实跑（无端点/密钥，会写 workspace），已如实列在评估文档。★ 请统筹方裁决 P19 方向（维持协议正确 vs 改 AGENT_REASONING_REPLAY=never）。D30 机械复查无新漂移；P20 默认值变化已同步 MODULES §28/OPERATIONS §4.17/PENDING C11，并把 4 个测试里『P18 起默认 block』的陈旧注释改成与实现一致。
+ CYCLE.md                              |   2 +-
+ README.md                             |   5 +-
+ core/coding_cycle.py                  |  56 ++++-
+ core/contract.py                      |   2 +
+ core/cycle.py                         |   9 +
+ core/llm.py                           | 139 ++++++++++-
+ core/worker.py                        |  40 +++-
+ docs/ARCHITECTURE.md                  |   2 +-
+ docs/CHANGELOG.md                     |  64 +++++
+ docs/EVALUATION-REASONING-PROTOCOL.md | 436 ++++++++++++++++++++++++++++++++++
+ docs/MODULES.md                       |  24 +-
+ docs/OPERATIONS.md                    |  12 +-
+ docs/PENDING_DECISIONS.md             |  25 +-
+ tests/README.md                       |   4 +-
+ tests/unit/test_artifact_binding.py   |   9 +-
+ tests/unit/test_cycle_manifest.py     |   6 +-
+ tests/unit/test_decompose_review.py   |  98 +++++---
+ tests/unit/test_model_swap.py         | 155 ++++++++++++
+ tests/unit/test_reasoning_protocol.py | 224 +++++++++++++++++
+ tests/unit/test_reuse_scope.py        |   4 +-
+ tests/unit/test_transparency.py       |   6 +-
+ 21 files changed, 1216 insertions(+), 106 deletions(-)
+```
+
+---
+
+## v1.31 — 2026-10-05 18:20
+
+**改动**：P21 / M1 —— **上下文链路调用算法（外部记忆库）的第一期：独立库只做存储与检索**（round_id R-c0c8ba72e3）。来源：用户 2026-10-03 提议（外部记忆链表 + 物理存储上下文的区域 + 按对话时间/关键词分区 + 单元平常不调用、调用分机制）+ 统筹方 DISPATCH ⓪「本轮的活只有 M1：存储与检索 + 独立根 + 越界拒绝，**不接模型**」与 WORK-ORDER【P21】的三期（M1/M2/M3，**不许跳级**）。★ 先交代本轮为什么只做这一件：ROUND.json 的 open_items 有 7 条，逐条对仓库事实核过去 —— D38（P17）v1.28 已交付、D39（P18）v1.29 交付且 v1.30 的 P20 已按工单退回 warn 并分档、D40（P19）v1.30 已交付且 WORK-ORDER 的 2026-10-05 更正条明写『已独立复核通过，保持 auto 不要改』、D41（P20）v1.30 已交付、D43 假换冒烟 v1.30 已交付、D37（P16 多语言）DISPATCH 逐字『现在别动』、D30 由 test_doc_invariants 第 8/10 组自带反向判据机械复查无新漂移 ⇒ 唯一没做过也没被推迟的就是 P21 M1（ROUND.json 的 [ ] 是载荷里的历史文本，不随交付回填，这正是本项目在治的 U- 类）。新增 core/context_store/ 五件：① units.py —— 单元结构（时间/关键词/**符号引用**/file:line/内容哈希）+ 内容寻址 id（sha256(source+LF+归一正文)[:16] ⇒ CRLF/LF 同 id、同 source 同内容幂等不重复）；② scope.py —— **独立根**（默认 D:\PythonProject\08-memory，在两侧仓库之外，判据是 os.path.normcase 前缀比较）+ **越界结构化拒绝** StoreScopeError（字段与 runtime.scope_error_result() 同形，但**刻意不 import core.runtime** —— M1 是独立库）：`..`/绝对路径/空路径/库根在仓库内一律拒；③ retrieval.py —— **两路召回**（关键词：显式关键词 > 正文子串 + idf；符号：unit.symbol_refs ∩ 查询符号，structure_lookup.via=find_symbol|get_module|get_architecture，**不新建关键词库**）+ 记分；calibrate() 给 missed/false_recalled/miss_rate/false_recall_rate 与候选阈值曲线；④ store.py —— ContextStore（write/read/list_units/recall/calibrate/archive/profile），索引 units.jsonl 一行一条、确定性排序、逐字节可复现；**全类没有删除方法**，淘汰只走 archive()（移入 archive/ + 索引留 status=archived/archived_at，read() 仍读得到原文 ⇒ 淘汰不抹证据）；⑤ __init__.py —— 包级 describe()。三条硬要求的落点：① 判据覆盖漏召/误召（探针实测 micro_recall=0.6、miss_rate=0.4、false_recall_rate=0.2，**不看调用成功**）；② 第二路召回真有牙（单测里有一个单元关键词与正文都没有查询词面、只有 symbol_refs 命中，关键词路召不回、符号路召回 ⇒ 摘掉符号路立刻红）；③ 阈值不许定死（recall() 没有 threshold 参数，用 inspect.signature 钉住；返回全部带分数候选；recommended_threshold 恒为 None）。★ 测试逃生口（放宽了就说放宽了）：本轮硬边界只许写本仓库，而 M1 要求库根在仓库之外 ⇒ 单测/探针用显式关键字 allow_inside_repos=True 在 .tmp/ 造临时库根，生产代码无一处传它，放宽事实印在 profile()["scope"]["outside_repos"]["relaxed"]，默认值仍是拒绝（三条仓库各试一次 + 环境变量指进仓库，四例全拒）。验证：新增 tests/unit/test_memory_store.py 71/71、tests/diagnostics/probe_memory_store.py 五段取证 exit 0；全量单测 50/50（新计数）、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4，全部 exit 0。契约面零改动、零破坏：事件仍 18 种、工具仍 18 个、PHASE_ORDER/CycleReport/Snapshot/Event/端点/版本轴/TOOLS_MAP 全未动 —— 本包没有被任何生产代码 import（AST 扫描：只有标准库 + 包内相对导入）、main.py 未引用、无工具注册 ⇒ 主链路行为逐字节不变（这正是约束 4『在跨模型对比结论出来之前不得进主链路』的机判形态）。★ 未做：M2/M3、真实阈值校准、结构索引的实调用（本轮只产出 structure_lookup 原料）、默认库根未创建（在本仓库之外，只做路径计算证明隔离），均如实列在评估文档 §4.8/§7。D30 机械复查无新漂移；五处版本戳同步至 CHANGELOG §45。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.31:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.31:"`
+
+**验证**：
+- 全量单测 PASS (50/50)
+- 文档一致性 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 41 个 · 测试文件 50 个
+
+**本次提交的文件**：
+```
+949330f v1.31: P21/M1 上下文链路调用算法（外部记忆库）—— 独立库只做存储与检索（round_id R-c0c8ba72e3）
+ CYCLE.md                                |   2 +-
+ README.md                               |   3 +-
+ core/context_store/__init__.py          |  61 ++++
+ core/context_store/retrieval.py         | 354 +++++++++++++++++++++
+ core/context_store/scope.py             | 205 ++++++++++++
+ core/context_store/store.py             | 328 ++++++++++++++++++++
+ core/context_store/units.py             | 202 +++++++++++++
+ docs/ARCHITECTURE.md                    |   2 +-
+ docs/CHANGELOG.md                       |  89 ++++++
+ docs/EVALUATION-MEMORY-M1.md            | 531 ++++++++++++++++++++++++++++++++
+ docs/MODULES.md                         |  73 ++++-
+ docs/OPERATIONS.md                      |   2 +-
+ docs/VERSIONS.md                        |  18 ++
+ tests/diagnostics/probe_memory_store.py | 229 ++++++++++++++
+ tests/unit/test_memory_store.py         | 467 ++++++++++++++++++++++++++++
+ 15 files changed, 2560 insertions(+), 6 deletions(-)
+```
+
+> 本条目由本轮**手工追加**（`tests/backup.py` 需要 `--tag/--note` 参数），
+> 格式与它写入的一致；**历史条目只增不改**。
+> 提交后独立复核：在 commit `949330f` 之后重跑全量单测 **50/50**、
+> 文档审查 **18/18**，均 exit 0（见 `docs/EVALUATION-MEMORY-M1.md` §4.8）。
+
+
+## v1.32 — 2026-10-05 19:18
+
+**改动**：P21 ★★ **调用分算法必须与模型无关**（`round_id R-d11562e8d6`）：`retrieval.score(unit, query_context) -> float` 唯一纯函数入口（不读时钟/环境/网络、不调模型、不改入参）+ `score_breakdown()` 四项构成 lexical/symbol/time_decay/custom **相加 == 总分**+ 时间衰减纯函数（`now` 显式，`half_life_days=None` 默认关闭、参数不许拍）+ 定制加权 `[{why,add,when}]` 显式配置（缺 why / 未知键 / 非法值一律 ValueError）+ `calibrate()` 记 config/samples/curve 三指纹 ⇒ 校准可复现+ `recall().basis = {scorer:'S-A', model:null, config_sha256}`（scorer 与 model 并列归因；S-A 标已实现、S-B/S-C 如实标 M2 对照臂未实现）；`STORE_VERSION` m1.1→m1.2。新增 `tests/unit/test_memory_scoring.py`（63 项）+ `tests/diagnostics/probe_memory_scoring.py`（六段）；4 条反空洞（偏航打分器/读时钟打分器/改一项构成/改一条标注 ⇒ 同一条判据立刻红）。契约面零改动（事件 18 / 工具 18 / 端点/阶段/版本轴未动，本包无生产消费方）。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.32:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.32:"`
+
+**验证**：
+- 全量单测 PASS (51/51)
+- 文档一致性 PASS (35/35)
+- 文档不变量 PASS (35/35)
+- 文档审查 PASS (18/18)
+
+**规模**：工具 18 个 · core 模块 36 个（`core/*.py`，与 `tests/backup.py` 同口径；含 `core/context_store/` 子包共 41 个 —— v1.31 条目写的是后者）· 测试文件 51 个
+
+**本次提交的文件**：
+```
+dc154c4 v1.32: P21 ★★ 调用分算法必须与模型无关（round_id R-d11562e8d6）
+ CYCLE.md                                  |   2 +-
+ README.md                                 |   3 +-
+ core/context_store/__init__.py            |  11 +-
+ core/context_store/retrieval.py           | 428 ++++++++++++++++++++++++--
+ core/context_store/store.py               |  24 +-
+ docs/ARCHITECTURE.md                      |   2 +-
+ docs/CHANGELOG.md                         |  68 +++++
+ docs/EVALUATION-MEMORY-SCORING.md         | 488 ++++++++++++++++++++++++++++++
+ docs/MODULES.md                           |  63 +++-
+ docs/OPERATIONS.md                        |   2 +-
+ tests/diagnostics/probe_memory_scoring.py | 336 ++++++++++++++++++++
+ tests/unit/test_memory_scoring.py         | 473 +++++++++++++++++++++++++++++
+ 12 files changed, 1857 insertions(+), 43 deletions(-)
+```
+
+> 本条目由本轮**手工追加**（格式与 `tests/backup.py` 写入的一致；历史条目只增不改）。
+> 提交后独立复核（备份点 `ab2842e` 之后重跑）见评估文档 `docs/EVALUATION-MEMORY-SCORING.md` §4.4：全量单测 51/51、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4，全部 exit 0；行尾门禁 `git ls-files --eol` 对本次改动的已跟踪文件**未翻行**。另：某一轮全量单测曾报 50/51（未复现、未捕获失败名），已如实记在该评估文档 §4.4。
+
+---
+
+## v1.33 — 2026-10-06 15:34
+
+**改动**：P22-A **模型档位 + 可启用模式（类插件结构）**（`round_id R-5f49cfa62f`）：只做 A（解耦）—— 把模型差异收进**档位**（数据），协议路径统一在适配层裁决。① `core/model_profile.py` 新增 `ModelReasoning`（`is_reasoning_model` / `replay`(auto|never|always) / `counts_in_max_tokens`（预算语义，仅声明；换算属 B1）/ `max_thinking_chars`（0=关闭））+ `problems()`（声明自洽，会红）与 `modes()`；`ModelProfile` 加 `reasoning` / `match` / `fallback` / `fallback_to`，新增 `effective_reasoning_replay()` 与 `tier()`（P22-A 全字段可机读）。② 加一个模型 = 加一份档位、**代码零改动**：`_guess_profile_name` 改为按各档位自带的 `match` 片段选档（函数里**不再有任何具体模型名**），内置新增 `reasoner`（推理模型、ctx=65536、max_tokens=8192、match=deepseek-*）；`register_profile()` 仍是运行时注册入口，新增 `profile_names()` / `profile_source()`（builtin/registered/missing）；匹配不到 ⇒ `default` + `auto`，且 `fallback`/`fallback_to` 使回落**可见**（不静默、不取极端）。③ **上限默认值进档位**：`from_env` 未显式给 `_CONTEXT_WINDOW` 时用档位声明的 `limits`（此前一律按窗口重推，会把档位的 `max_tokens=8192` 丢掉），显式覆盖仍优先。④ `core/llm.py`：`effective_replay_policy(profile)` = ① 进程级 `AGENT_REASONING_REPLAY` → ② 档位声明 → ③ `auto`；`request_messages(messages, tools, profile=None)` 仍是**唯一判定点**（`profile=None` 时与 P19 逐字节一致）；思考上限在回灌处按 `max_thinking_chars` 截断（默认关闭，0 时不多造副本）；新增 `replay_contract_problems(profile)`（★ **声明 vs 实现**判据，会红）；`aggregate_usage(..., profile=None)` 增记 `policy_declared`/`model`/`thinking_counts_in_max_tokens`。⑤ 暴露面：`/profile` 新增 `model_tiers`，`models[*]` 新增 `tier` 与 `replay_contract_problems`；`core/coding_cycle.py::_attach_model_usage` 把生效档位带进 `model_usage`（否则「换档位」与「换模型」会被混读）。★ 反空洞（机械输出见评估文档 §4）：运行时注册一份带 `match` 的档位 ⇒ 自动选中并用假 DeepSeek 端点（缺回灌即抛官方 400）跑通一道题；请求体 sha256 双向 —— 推理模式关/开（auto 下）与 `cap=0` 都**回到同一个基线哈希** `c1b86b4b0565c787`，而 `replay=never` / `cap=2` / `AGENT_REASONING_REPLAY=never` **必变**，取消覆盖后回原哈希；`replay_contract_problems` 在真实实现下为空、把 `request_messages` 换成「一律剥掉」的坏实现 ⇒ **立刻非空**、换回 ⇒ 又为空；一键关回灌 ⇒ 同一个假端点复现官方 400。★ 边界：B（思考策略）本轮**不动**（DISPATCH 逐字）；思考上限截断**未对真实推理端点实跑**（无端点/密钥），仅在假端点与请求体上取证 —— 如实记在评估文档 §4「未验证的部分」。D30 经机械复查无新漂移。契约面零破坏：事件仍 18 种、工具仍 18 个、`PHASE_ORDER`/`CycleReport`（`model_usage` 只加键）/`Snapshot`/`Event`/端点/版本轴未动，`/profile` 改动均为加性。
+
+**备份点**：本条目所在的提交（提交信息以 `v1.33:` 开头）
+
+**定位命令**：`git log --oneline --grep "^v1.33:"`
+
+**规模**：工具 18 个 · core 模块 36 个（`core/*.py`；含 `core/context_store/` 子包共 41 个）· `tests/unit/test_*.py` 52 个 + `tests/diagnostics/probe_*.py` 7 个
+
+**本次提交的文件**：
+
+```
+34a4deb v1.33: P22-A 模型档位 + 可启用模式（类插件结构）（round_id R-5f49cfa62f）
+ CYCLE.md                               |   2 +-
+ README.md                              |   3 +-
+ core/__init__.py                       |   6 +
+ core/coding_cycle.py                   |  10 +-
+ core/config.py                         |   8 +
+ core/llm.py                            | 159 +++++++++--
+ core/model_profile.py                  | 238 +++++++++++++++-
+ docs/ARCHITECTURE.md                   |   7 +-
+ docs/CHANGELOG.md                      |  55 ++++
+ docs/EVALUATION-MODEL-TIERS.md         | 487 +++++++++++++++++++++++++++++++++
+ docs/MODULES.md                        | 115 +++++++-
+ docs/OPERATIONS.md                     |  64 ++++-
+ main.py                                |  17 ++
+ tests/diagnostics/probe_model_tiers.py | 306 +++++++++++++++++++++
+ tests/unit/test_model_tiers.py         | 401 +++++++++++++++++++++++++++
+ 15 files changed, 1836 insertions(+), 42 deletions(-)
+```
+
+> 本条目由本轮**手工追加**（格式与 `tests/backup.py` 写入的一致；历史条目只增不改）。
+> 提交后独立复核见评估文档 `docs/EVALUATION-MODEL-TIERS.md` §4.7：全量单测 52/52、文档一致性 35/35、文档不变量 35/35、文档审查 18/18、契约符合性 44/44、前端契约 25/25、套件卫生 4/4，全部 exit 0；行尾门禁 `git ls-files --eol` 对本次改动的已跟踪文件**未翻行**。
+
+---

@@ -191,6 +191,11 @@ async def main() -> int:
     print("[5] 端到端：正确 Flask 交付物 → check 通过（不再判「静态检查未通过」）")
     print("=" * 74)
     clean_workspace()
+    # ★ 拆解关卡（P18/P20）：app.py 按 P1（叶任务=单交付物）本就
+    #   "不合规" —— 它必须同时交付 app 与 ping（这正是 P7b 要测的 Flask 写法）。
+    #   要测复用层就必须绕过拆解关卡，故**显式**关掉；关卡自身的默认值与
+    #   分档行为见 tests/unit/test_decompose_review.py 的 [V4]/[V5]。
+    os.environ["DECOMPOSE_GATE"] = "off"
     store = RecStorage()
     plan = {"status": "continue", "reasoning": "写 app.py",
             "files": [{"path": "app.py", "role": "Web 服务", "symbols": ["app", "ping"]}],
@@ -222,6 +227,7 @@ async def main() -> int:
     OK.check("★ reuse.blocking 为空", not (rc.get("blocking") or []))
     OK.check("清单也通过（P7 的模块级赋值 + P7b 的作用域）",
              (report.manifest or {}).get("passed") is True)
+    os.environ.pop("DECOMPOSE_GATE", None)
 
     clean_workspace()
     shutil.rmtree(tmp, ignore_errors=True)

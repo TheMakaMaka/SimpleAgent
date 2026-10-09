@@ -97,8 +97,11 @@ SELF_REPORT_OK = {
 
 #: 第二轮必须给一个**新**任务：同一任务会被指纹去重跳过，
 #: 一旦没有可执行任务，主循环会在验证之前就返回（实测踩到）。
+#: ⚠️ 拆解关卡（P18/P20）：描述**不再点名 mod.py** ——
+#: 否则它会与第一轮的「写 mod.py」构成 P4（兄弟任务动同一个文件），
+#: 在 `block` 模式下会被拦，而本组要测的是判据替换，不是拆解合规。Worker 仍照旧写 mod.py。
 ROUND2_TASKS = [{
-    "id": "t2", "description": "确认 mod.py 的实现符合断言", "expected_output": "确认结论",
+    "id": "t2", "description": "确认实现是否符合断言", "expected_output": "确认结论",
     "tool_hint": ["read_file"], "context_refs": [],
 }]
 

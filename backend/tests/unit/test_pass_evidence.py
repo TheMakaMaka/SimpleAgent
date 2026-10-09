@@ -64,7 +64,7 @@ class StubOrch:
         mem = SharedMemory(goal=goal)
         # 至少一条任务记录：否则主流程会在 "no-tasks" 就结束，走不到 verify/pass。
         mem.record(
-            Task(id="t1", description="实现 mod.f"),
+            Task(id="t1", description="实现 mod.f", expected_output="mod.f 函数"),
             TaskResult(task_id="t1", ok=True, output="done", steps_used=1),
         )
         if self._vs is not None:

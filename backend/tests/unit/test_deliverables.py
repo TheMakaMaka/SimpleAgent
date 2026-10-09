@@ -60,7 +60,8 @@ class GateOrch:
                     f.write(content)
             task_id = f"t{i + 1}"
             mem.record(
-                Task(id=task_id, description=f"写出 {rel}"),
+                Task(id=task_id, description=f"写出 {rel}",
+                     expected_output=f"{rel}"),
                 TaskResult(task_id=task_id, ok=True, output=f"已写入 {rel}",
                            artifacts=([Artifact(key=f"{task_id}_file_{rel}",
                                                 kind="file", path=rel)]

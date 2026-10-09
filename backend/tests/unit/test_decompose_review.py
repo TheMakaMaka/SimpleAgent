@@ -11,7 +11,9 @@
 * `checked_by="tool"` / `independent=false` —— **REVIEW 未配置时必须如实标注**，
   不得呈现为"审查通过"；
 * `undecidable` 是**第三态**（P5/P6 机械近似），不是"通过"；
-* **否决权真的有效**：`DECOMPOSE_GATE=block` 时不合规的拆解会被拦下。
+* **否决权真的有效**：`DECOMPOSE_GATE=block` 时不合规的拆解会被拦下；
+* **P20 出厂默认**：不设任何环境变量时 `DECOMPOSE_GATE_DEFAULT == "warn"`（止血），
+  且**分档**：`undecidable`（判不了）**不得**等同于不通过 —— 只有 `violated` 才否决。
 """
 
 import asyncio
@@ -121,10 +123,16 @@ class ScriptedLLM:
     def __init__(self, decisions):
         self.decisions = decisions
         self.seen = 0
+        # ★ P19：报告要能看到 reasoning 用量（推理模型的思考 token 先吃预算）。
+        self.usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                      "reasoning_tokens": 0}
 
     async def chat_json(self, messages):
         d = self.decisions[min(self.seen, len(self.decisions) - 1)]
         self.seen += 1
+        self.usage["calls"] += 1
+        self.usage["completion_tokens"] += 10
+        self.usage["reasoning_tokens"] += 7
         return d
 
 
@@ -223,14 +231,27 @@ async def main() -> int:
     }
     done = {"status": "done", "reasoning": "完事", "tasks": [], "files": [],
             "verify": {}, "final_answer": "完成"}
+    # P18：合规拆解（无并列词、单交付物单符号、逐叶 expected_output）——
+    # 用来证明默认 block **不会一律拦死**。
+    plan_good = {
+        "status": "continue", "reasoning": "写 add.py",
+        "files": [{"path": "add.py", "role": "实现", "symbols": ["add"]}],
+        "tasks": [{"id": "t1", "description": "写 add.py", "expected_output": "add.py",
+                   "tool_hint": ["write_file"], "context_refs": []}],
+        "verify": {"command": "import add\nassert add.add(1, 2) == 3", "reason": "断言"},
+        "final_answer": "",
+    }
     self_report = {"done": [], "not_done": [], "why": [], "reflections": [],
                    "approach": [], "confidence": {"level": "low", "basis": ""},
                    "open_questions": [], "requirements": [], "claims": {}}
 
-    async def run(mode: str):
-        os.environ["DECOMPOSE_GATE"] = mode
+    async def run(mode, first=None):
+        if mode is None:
+            os.environ.pop("DECOMPOSE_GATE", None)   # 不设环境变量 = 测出厂默认
+        else:
+            os.environ["DECOMPOSE_GATE"] = mode
         store = RecStorage()
-        orch = Orchestrator(ScriptedLLM([plan_bad, done, self_report]),
+        orch = Orchestrator(ScriptedLLM([first or plan_bad, done, self_report]),
                             StubWorker(), pipeline=None, verify_command=None)
         cycle = CodingCycle(orchestrator=orch, worker=None, pipeline=CheckPipeline(),
                             max_attempts=1, verbose=False, storage=store, persist=True,
@@ -257,6 +278,85 @@ async def main() -> int:
                  and r_block.outcome_kind == "decomposition-violation")
         OK.check("否决文案要求「重新拆解，或声明做不到」",
                  "重新拆解" in str(r_block.error))
+    finally:
+        os.environ.pop("DECOMPOSE_GATE", None)
+
+    # ================= V4：P20 出厂默认 = warn（止血）+ 分档双向 =================
+    print("\n" + "=" * 74)
+    print("[V4] P20：不设 DECOMPOSE_GATE ⇒ 出厂默认 warn（先止血，分档后再决定升 block）")
+    print("=" * 74)
+    probe = CodingCycle(orchestrator=None, worker=None, pipeline=None,
+                        storage=RecStorage(), persist=False)
+    os.environ.pop("DECOMPOSE_GATE", None)
+    OK.check("★ 类默认值 == warn（P20 要求 1：退回 warn 止血）",
+             CodingCycle.DECOMPOSE_GATE_DEFAULT == "warn")
+    OK.check("★ 不设环境变量 ⇒ _decompose_gate_mode() == 'warn'",
+             probe._decompose_gate_mode() == "warn")
+    for m in ("off", "warn", "block"):
+        os.environ["DECOMPOSE_GATE"] = m
+        OK.check(f"环境变量 {m} 仍可覆盖（保留灰度）",
+                 probe._decompose_gate_mode() == m)
+    os.environ["DECOMPOSE_GATE"] = "bogus"
+    OK.check("非法值回落到默认 warn（不是静默放行）",
+             probe._decompose_gate_mode() == "warn")
+    os.environ.pop("DECOMPOSE_GATE", None)
+
+    clean_workspace()
+    try:
+        r_def_bad, s_def_bad = await run(None)          # 不合规 + 无环境变量
+        print(f"  默认 + 不合规：phase={r_def_bad.phase.value} "
+              f"outcome={r_def_bad.outcome} kind={r_def_bad.outcome_kind}")
+        evd = s_def_bad.saved("decompose_review")
+        pld = (evd[-1].payload if evd else {}) or {}
+        print(f"    事件：mode={pld.get('mode')!r} applied={pld.get('applied')} "
+              f"violated={pld.get('violated')} undecidable={pld.get('undecidable')}")
+        OK.check("★ 默认 warn：不合规拆解**只留痕、不拦路**（这正是止血）",
+                 r_def_bad.outcome_kind != "decomposition-violation"
+                 and pld.get("applied") is False)
+        OK.check("留痕仍在：事件带 violated（含 P3）与 mode=warn",
+                 pld.get("mode") == "warn" and "P3" in (pld.get("violated") or []))
+        mu = r_def_bad.model_usage or {}
+        print(f"  P19 报告用量：{mu.get('total')}")
+        OK.check("★ P19：报告带模型用量（含 reasoning_tokens，且进了 to_dict）",
+                 int((mu.get("total") or {}).get("reasoning_tokens") or 0) > 0
+                 and "model_usage" in r_def_bad.to_dict())
+    finally:
+        os.environ.pop("DECOMPOSE_GATE", None)
+
+    # ================= V5：P20 分档 —— undecidable ≠ 不通过（双向） =================
+    print("\n" + "=" * 74)
+    print("[V5] P20 分档：只有 undecidable（无 violated）⇒ 放行；有 violated ⇒ 拦下")
+    print("=" * 74)
+    clean_workspace()
+    try:
+        # plan_good 的机械层结论恰好是「0 条违反 / 2 条判不了（P2/P5）」——
+        # 正是统筹方实测里被 `block` 误否决的那种拆解。
+        os.environ["DECOMPOSE_GATE"] = "block"
+        r_und, s_und = await run("block", first=plan_good)
+        print(f"  block + 只有 undecidable：phase={r_und.phase.value} "
+              f"outcome={r_und.outcome} kind={r_und.outcome_kind}")
+        evu = s_und.saved("decompose_review")
+        plu = (evu[-1].payload if evu else {}) or {}
+        print(f"    事件：passed={plu.get('passed')} violated={plu.get('violated')} "
+              f"undecidable={plu.get('undecidable')}")
+        OK.check("★ 只有 undecidable、没有 violated ⇒ **放行**（不被否决）",
+                 r_und.phase.value == "record"
+                 and r_und.outcome_kind != "decomposition-violation")
+        OK.check("★ 事件如实分档：violated 为空、undecidable 非空、passed=True",
+                 not (plu.get("violated") or [])
+                 and bool(plu.get("undecidable"))
+                 and plu.get("passed") is True)
+
+        clean_workspace()
+        r_vio, s_vio = await run("block", first=plan_bad)
+        print(f"  block + 有 violated：phase={r_vio.phase.value} "
+              f"outcome={r_vio.outcome} kind={r_vio.outcome_kind}")
+        print(f"    error={str(r_vio.error)[:110]}")
+        OK.check("★ 有 violated ⇒ **拦下**（双向，不是一律放行）",
+                 r_vio.phase.value == "failed"
+                 and r_vio.outcome_kind == "decomposition-violation")
+        OK.check("拦下理由写明违反了 P3 + 逐条证据",
+                 "P3" in str(r_vio.error) and "逐条证据" in str(r_vio.error))
     finally:
         os.environ.pop("DECOMPOSE_GATE", None)
 

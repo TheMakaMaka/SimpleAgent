@@ -55,7 +55,8 @@ class StubOrch:
     async def run(self, goal: str):
         mem = SharedMemory(goal=goal)
         mem.record(
-            Task(id="t1", description="实现 ant_colony"),
+            Task(id="t1", description="实现 ant_colony",
+                 expected_output="ant_colony 模块"),
             TaskResult(task_id="t1", ok=True, output="done", steps_used=1),
         )
         mem.verify_state = dict(self._vs)
